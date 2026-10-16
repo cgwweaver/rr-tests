@@ -12,6 +12,10 @@ Your report: `box::use()` at the top of `_targets.R` worked with plain `tar_make
     - The main process still needs `box.path` set (see "Second trap").
     - targets stops noticing edits to a module that is only used this way. Fix: add a file target (see below).
   - `tar_option_set(packages = "dplyr")` works for packages. It does nothing for modules. It also attaches the whole package on the worker, as `library()` does.
+- **There is no `tar_load_pkgs()`.** The closest names:
+  - `tar_option_set(packages =)` (above) is the one that loads packages on workers.
+  - `tar_load_globals()` runs `_targets.R` in **your own** R session, for debugging. It does nothing for workers. (Checked: after it, `mod:dplyr` was attached in my session.)
+  - `tar_load()` reads a finished target's value. It has nothing to do with packages.
 - **Recommended:** keep pipeline functions in box modules. Import the *module object* at the top of `_targets.R`. Call `mod$fn()` in the commands. See "What to do".
 - **If you want to keep your current top-of-script style:** crew can run the same `box::use()` line on every worker when the worker starts. See "Running setup code on every crew worker". It works, but it is a workaround.
 - **A second trap, even without crew.** `box::use(mods/x)` at the top of `_targets.R` fails under plain `tar_make()` unless box is told where your modules are (`options(box.path = ...)` or the `R_BOX_PATH` environment variable).
@@ -30,7 +34,7 @@ Line numbers are from the upstream dev copies. The code of these functions is th
    - targets' own settings (`tar_option_set()`) and its `TAR_*` environment variables.
 
    It does **not** send:
-   - the search path (anything attached);
+   - the search path: everything attached with `library()` or `attach()`, which is where R looks up names that are not global (see it with `search()`);
    - R `options()`, so not `box.path`;
    - box's cache of loaded modules.
 4. On the worker:
@@ -96,7 +100,9 @@ What a target sees. Taken from `targets/mechanism_view`, whose `_targets.R` has 
   - targets still does not notice edits to module functions attached this way.
   - Tested only with local workers on Linux. Not tested on Windows (quoting) or with crew.cluster.
 
-## Results (each variant is a small project in `targets/<variant>/`; `Rscript 04-targets.R` reruns all of them, about 5 min)
+## Results
+
+Each variant is a small project in `targets/<variant>/`. `Rscript 04-targets.R` reruns all of them (about 5 min).
 
 How to read the tables:
 - `none` = plain `tar_make()`. `crew` = `crew_controller_local(workers = 2)`.
@@ -195,7 +201,11 @@ Side findings:
    - `options(box.path)` alone, for modules outside the project.
    - `options(box.path)` and `R_BOX_PATH` together: `R_BOX_PATH` wins and the option is ignored.
 
-Rerun: `Rscript 04-targets.R` writes `results/04-targets.csv` and regenerates `targets/<variant>/` (about 5 min). Fast tests: `testthat::test_file("tests/testthat/test-targets.R")` (6 checks, about 3 s). Add `RUN_TARGETS_TESTS=true` to also run the real pipelines (15 checks, about 55 s). Tested with targets 1.12.0, tarchetypes 0.14.1, crew 1.3.3, mirai 2.7.3, box 1.2.3, callr 3.8.0. Only local crew workers on Linux were tested.
+Rerun:
+- `Rscript 04-targets.R` writes `results/04-targets.csv` and regenerates `targets/<variant>/` (about 5 min).
+- Fast tests: `testthat::test_file("tests/testthat/test-targets.R")` (6 checks, about 3 s).
+- Add `RUN_TARGETS_TESTS=true` to also run the real pipelines (15 checks in total, about 55 s).
+- Tested with targets 1.12.0, tarchetypes 0.14.1, crew 1.3.3, mirai 2.7.3, box 1.2.3, callr 3.8.0. Only local crew workers on Linux were tested.
 
 ---
 [← back to README](../README.md) · [cheat sheet](../CHEATSHEET.md)

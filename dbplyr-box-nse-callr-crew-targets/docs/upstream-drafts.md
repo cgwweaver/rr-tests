@@ -1,7 +1,10 @@
 # Upstream drafts (ready to paste; **none filed**)
 
-These are drafts only. Filing is your call. Each draft was written before the checking pass, so a "Checker notes" line under a draft lists what to fix before you paste it.
-Before filing, search the tracker once more. The agents could read issue titles and opening posts, but not comment threads.
+These are drafts only. Filing is your call.
+
+- Fixes found when I re-checked the drafts are already in the draft bodies. A "Note for you" line under a draft is not part of the text to paste.
+- Before filing, search the tracker once more. I could read issue titles and opening posts, but not comment threads.
+- Plain-language explanation of each one (why it's a problem, what to expect, which package): [upstream-issues.md](upstream-issues.md).
 
 | # | repo | title |
 |---|---|---|
@@ -20,9 +23,7 @@ Before filing, search the tracker once more. The agents could read issue titles 
 
 ## 1. tidyverse/dbplyr: Calls with a non-symbol function (`obj$fn(col)`, `(\(x) ...)(col)`) are evaluated in R and silently use a same-named local variable instead of the column
 
-*Related, already on the tracker:* tidyverse/dbplyr#200 'Reconsider local evaluation' (closed 2019-01-09; body: partial_eval locally evaluates `pkg::bar()` and `x$y`, worth reconsidering with unquoting). tidyverse/dbplyr#1870 'filter does not work when creating a vector on the fly for %in%' (open; different silent wrong result from the same local/remote heuristic, reproduced here). tidyverse/dbplyr#1426 'Make namespaced functions error if no translation?' (closed, completed; precedent for erroring). No exact duplicate found via semantic search (could not read comment threads).
-
-> Checker notes: the prototype guard in this draft covers only the "compound call head" branch. `(!!f)(col)` goes through a separate branch (`R/tidyeval.R:213-219`) and is not caught. `lst$f(cfg$var1)` is a false positive, because `all.names()` also matches `$` field names. Mention both if you propose the guard.
+*Related, already on the tracker:* tidyverse/dbplyr#200 'Reconsider local evaluation' (closed 2019-01-09; body: partial_eval locally evaluates `pkg::bar()` and `x$y`, worth reconsidering with unquoting). tidyverse/dbplyr#1870 'filter does not work when creating a vector on the fly for %in%' (open; different silent wrong result from the same local/remote heuristic, reproduced here). tidyverse/dbplyr#1426 'Make namespaced functions error if no translation?' (closed, completed; precedent for erroring). No exact duplicate found by issue search (I could not read comment threads).
 
 <details><summary>Draft body</summary>
 
@@ -63,7 +64,7 @@ if (length(cols)) {
 }
 ```
 
-With it, `lst$f(var1)` and `(\(z) z * 2)(var1)` error, while `lubridate$ymd("2024-01-01")`, `local(lst$f(var1))` and `lst$f(only_global)` still work. I have not run the test suite with it. `all.names()` also matches `$` field names, so a real fix probably needs a more careful walk.
+With it, `lst$f(var1)` and `(\(z) z * 2)(var1)` error, while `lubridate$ymd("2024-01-01")`, `local(lst$f(var1))` and `lst$f(only_global)` still work. I have not run the test suite with it. Two known gaps: `(!!f)(var1)` goes through a separate branch (the `is.function(fun)` one, R/tidyeval.R:215-219) and is not caught; and `all.names()` also matches `$` field names, so `lst$f(cfg$var1)` is a false alarm. A real fix probably needs a more careful walk.
 
 Related: #200 (closed) discussed when `partial_eval()` evaluates `x$y` locally. #1870 (open) is another silent wrong result from the local/remote guess.
 
@@ -75,11 +76,9 @@ Tested with dbplyr 2.6.0 (CRAN) and main @ f478e20 (2.6.0.9000); R 4.6.1, RSQLit
 
 *Related, already on the tracker:* tidyverse/dbplyr#1117 'Export a mask akin to rlang::.data for custom SQL functions' (closed, completed 2025-12-15; origin of .sql, motivated by R CMD check notes). tidyverse/dbplyr#1570 'Translation to REGEXP_INSTR errors in snowflake with options(dplyr.strict_sql = TRUE)' (closed, completed; shows strict mode is maintained). No duplicate found.
 
-> Checker notes: `?.sql` also says "`.sql` itself does nothing and is just `NULL`; it is automatically removed when dbplyr translates your R code to SQL". So the docs are ambiguous, not silent. Quote that sentence too. Workaround tip: with UPPER-case names, numbers render as `2.0`, and duckdb rejects `SUBSTRING(x, 2.0, 3.0)`. Use `2L`, `3L`.
-
 <details><summary>Draft body</summary>
 
-`?.sql` says: "Use `.sql$foo(x, y)` to make it clear that you're calling the SQL `foo()` function, not the R `foo()` function." But the pronoun is only stripped in `partial_eval()` (`call[[1]] <- fun[[3]]`), and the remaining call then goes through normal translation. This has two consequences.
+`?.sql` says: "Use `.sql$foo(x, y)` to make it clear that you're calling the SQL `foo()` function, not the R `foo()` function." It also says "`.sql` itself does nothing and is just `NULL`; it is automatically removed when dbplyr translates your R code to SQL", which hints at the behaviour below but doesn't spell it out. The pronoun is only stripped in `partial_eval()` (`call[[1]] <- fun[[3]]`), and the remaining call then goes through normal translation. This has two consequences.
 
 **1. If the SQL function has the same name as a translated R function, you get R's translation, sometimes with a different meaning:**
 
@@ -94,9 +93,11 @@ db |> transmute(y = .sql$substr(x, 2, 3)) |> show_query()
 #> FROM `dbplyr_tmp_...`
 db |> transmute(y = .sql$substr(x, 2, 3)) |> pull()
 #> [1] "lp"
-db |> transmute(y = .sql$SUBSTR(x, 2, 3)) |> pull()   # upper case is not in the translator
+db |> transmute(y = .sql$SUBSTR(x, 2L, 3L)) |> pull()   # upper case is not in the translator
 #> [1] "lph"
 ```
+
+(The upper-case workaround needs integer literals: with `2, 3` dbplyr writes `2.0, 3.0`, which duckdb rejects in `SUBSTRING(x, 2.0, 3.0)`.)
 
 Other examples: `.sql$nchar(x)` becomes `LENGTH(x)` (Oracle) or `LEN(x)` (SQL Server), `.sql$round(y)` becomes `ROUND(y, 0)`, and `.sql$paste(x, y)` becomes `x || ' ' || y`.
 
@@ -120,9 +121,7 @@ Tested with dbplyr 2.6.0 (CRAN) and main @ f478e20 (2.6.0.9000).
 
 ## 3. klmr/box: box::use(base[...]) fails with a misleading error since 1.1.3 (lazydata lookup on the base namespace)
 
-*Related, already on the tracker:* Searched klmr/box issues and found no report of this bug. Related, all closed: klmr/box#219 'Support package data' (added the lazydata lookup that causes this); klmr/box#294 'Attaching datasets with box::use()'; klmr/box#200 'Auto-use (optionally) R's standard library?'; klmr/box#181 'Behavior with stats package'. Only titles/states were visible (plus #200's body); comments could not be read from this session.
-
-> Checker notes: the 1.1.2 → 1.1.3 regression was confirmed by installing both CRAN versions on R 4.6.1. 1.1.2 imports base; 1.1.3 fails with the same error.
+*Related, already on the tracker:* Searched klmr/box issues and found no report of this bug. Related, all closed: klmr/box#219 'Support package data' (added the lazydata lookup that causes this); klmr/box#294 'Attaching datasets with box::use()'; klmr/box#200 'Auto-use (optionally) R's standard library?'; klmr/box#181 'Behavior with stats package'. Only titles/states were visible (plus #200's body); I could not read the comments.
 
 <details><summary>Draft body</summary>
 
@@ -139,7 +138,7 @@ box::use(base[nchar])
 
 `box::use(base)`, `box::use(base[nch = nchar])` and `box::use(base[...])` fail the same way. Other default packages (stats, utils, methods, tools, graphics, grDevices, datasets) and lazydata packages (e.g. `stringr[fruit]`, `dplyr[starwars]`) import fine.
 
-**Cause.** `mod_export_names.box$pkg_info` (R/use.r) calls `ls(getNamespaceInfo(mod_ns, 'lazydata'))`. `getNamespaceInfo()` uses `asNamespace(ns, base.OK = FALSE)`, so for base it errors with `operation not allowed on base namespace`. `ls()` then swallows that error, deparses the argument and looks it up as a search-list name, which gives the confusing message above. The lookup was added with lazydata support in 1.1.3 (#219). In 1.1.2 the method was `getNamespaceExports(mod_ns)`, which special-cases base, so `box::use(base[...])` used to work.
+**Cause.** `mod_export_names.box$pkg_info` (R/use.r) calls `ls(getNamespaceInfo(mod_ns, 'lazydata'))`. `getNamespaceInfo()` uses `asNamespace(ns, base.OK = FALSE)`, so for base it errors with `operation not allowed on base namespace`. `ls()` then swallows that error, deparses the argument and looks it up as a search-list name, which gives the confusing message above. The lookup was added with lazydata support in 1.1.3 (#219). In 1.1.2 the method was `getNamespaceExports(mod_ns)`, which special-cases base, so `box::use(base[...])` used to work. (Checked by installing both CRAN versions on R 4.6.1: 1.1.2 imports base, 1.1.3 fails with the error above.)
 
 **Why support it.** Inside modules base is always visible, so importing it is usually redundant. But it has real uses: aliases (`base[nch = nchar]`), re-pinning a base function after a wildcard import masked it (`box::use(dplyr[...], base[intersect])`), and a "declare every dependency" style. `base::nchar` is fine in R, and Python allows `from builtins import len`. If you'd rather disallow it, an explicit error ("base is always available inside modules") would still beat the current message.
 
@@ -225,19 +224,6 @@ Tested with dbplyr 2.6.0 (CRAN) and main @ f478e20 (2.6.0.9000).
 
 *Related, already on the tracker:* None found. Searched tidyverse/dbplyr issues for 'dialect_mssql union hangs infinite recursion', 'union_all SQL Server lazy_frame numeric_version modify_tree', 'SQL Server union freezes show_query' and 'union_all mssql dialect hang show_query never returns' (results unrelated: #1317, #1269, #1134 closed). Searched tidyverse/purrr for 'modify_tree numeric_version infinite recursion': none.
 
-> Checker notes: **the fix proposed in this draft is wrong.** Patched in, it drops the BIT cast on the right-hand side of the union. A narrower fix that stops the tree walk at `numeric_version`, `sql_dialect` and `DBIConnection` objects works (tested):
-> 
-> ```r
-> suppressPackageStartupMessages({library(dplyr); library(dbplyr)})
-> ns <- asNamespace("dbplyr")
-> fixed_pre <- function(sql) {
->   sql$lazy_query <- purrr::modify_tree(sql$lazy_query,
->     is_node = \(x) inherits(x, "lazy_query") || (is.list(x) && !inherits(x, c("numeric_version", "sql_dialect", "DBIConnection"))),
->     post = ns$mssql_update_where_clause)
->   sql
-> }
-> ```
-
 <details><summary>Draft body</summary>
 
 With dbplyr 2.6.0 (R 4.6.1), rendering a union of two lazy tables that use `dialect_mssql()` never returns; R spins at 100% CPU.
@@ -255,7 +241,21 @@ remote_query(dplyr::union_all(b, b))   # fine
 
 Cause (I think): `db_sql_render.sql_dialect_mssql()` -> `mssql_render_preprocess()` calls `purrr::modify_tree(sql$lazy_query, is_node = \(x) is.list(x) || inherits(x, "lazy_query"), ...)`. A union query stores the RHS `tbl_lazy` itself (`$unions$table`), whose `src$con` is the dialect object, a list with `version = numeric_version("15.0")`. A `numeric_version` is a list whose `[[1]]` is identical to itself (`identical(v[[1]], v)` is `TRUE`), so the tree walk never ends. Minimal: `purrr::modify_tree(list(v = numeric_version("15.0")), is_node = is.list)` does not return.
 
-Possible fix: only descend into plain lists / lazy queries, e.g. `is_node = \(x) inherits(x, "lazy_query") || (is.list(x) && !is.object(x))`, or skip `tbl_lazy`/`sql_dialect` objects.
+Possible fix: stop the walk at `numeric_version`, `sql_dialect` and `DBIConnection` objects:
+
+```r
+mssql_render_preprocess <- function(sql) {
+  sql$lazy_query <- purrr::modify_tree(
+    sql$lazy_query,
+    is_node = \(x) inherits(x, "lazy_query") ||
+      (is.list(x) && !inherits(x, c("numeric_version", "sql_dialect", "DBIConnection"))),
+    post = mssql_update_where_clause
+  )
+  sql
+}
+```
+
+Patched in locally, this ends the hang and keeps the BIT cast on both sides of a union (`WHERE (cast([f] AS [BIT]) = 1)`) and in joins. The broader `is_node = \(x) inherits(x, "lazy_query") || (is.list(x) && !is.object(x))` is not enough: it also ends the hang, but the right-hand side of the union then renders `WHERE ([f])`, which SQL Server rejects.
 
 </details>
 
@@ -316,7 +316,7 @@ Verified failing on SQL Server 2022 and 2025. `mssql_needs_bit()` casts to BIT w
 
 *Related, already on the tracker:* tidyverse/dbplyr#1468 'Incorrect translation of dates with Oracle ODBC.' (closed, about as.Date literal), #1389 'Translation of as.Date in Oracle is not correct in version 2.4' (closed), #661 'Possible incorrect date literal translation for Oracle?' (closed, 2022), #526 'How filter on DateTime in Oracle' (closed). I could only see titles/state; could not read their bodies to confirm whether escaped values were discussed.
 
-> Checker notes: on SQLite the "portable" `as.Date(!!format(x))` form renders `CAST('2024-01-02' AS DATE)`, which SQLite evaluates to the number 2024. So it is not portable to SQLite.
+> Note for you: the workaround `as.Date(!!format(x))` works on Oracle, SQL Server and duckdb, but not on SQLite. There it renders `CAST('2024-01-02' AS DATE)`, which SQLite evaluates to the number 2024.
 
 <details><summary>Draft body</summary>
 
@@ -335,8 +335,6 @@ The same happens without `!!` (global inlined) and for POSIXct (`'2024-01-02T00:
 
 *Related, already on the tracker:* None found: the issue searches 'imports option' and 'is_dag cycle' in ropensci/targets returned nothing. The search index looked sparse, so treat this as not verified.
 
-> Checker notes: dplyr has two mutually recursive pairs, not one: `expand_pick_call`/`expand_pick_quo` and `dplyr_order_legacy`/`dplyr_proxy_order_legacy`.
-
 <details><summary>Draft body</summary>
 
 targets 1.12.0 (also in dev 1.12.0.9001, R/utils_imports.R line 26). With
@@ -347,7 +345,7 @@ tar_option_set(imports = "dplyr")
 list(tar_target(out, dplyr::mutate(data.frame(var1 = 1:3), x = var1 * 2)))
 ```
 
-`tar_make()` errors with `igraph::is_dag(graph) is not TRUE`. The cause is `graph_edges()`: `stopifnot(igraph::is_dag(graph))`. dplyr has mutually recursive internals (`expand_pick_call` <-> `expand_pick_quo`; 2 strongly connected groups), so the import graph has a cycle.
+`tar_make()` errors with `igraph::is_dag(graph) is not TRUE`. The cause is `graph_edges()`: `stopifnot(igraph::is_dag(graph))`. dplyr has mutually recursive internals (2 strongly connected groups: `expand_pick_call` <-> `expand_pick_quo` and `dplyr_order_legacy` <-> `dplyr_proxy_order_legacy`), so the import graph has cycles.
 
 Suggestions: (a) a clear error naming the functions involved (as tar_igraph()/find_cycle() already do for targets), and/or (b) collapse strongly connected components of imports into one hashed node, since mutual recursion is legitimate in package code (and user code).
 
@@ -357,7 +355,7 @@ Suggestions: (a) a clear error naming the functions involved (as tar_igraph()/fi
 
 *Related, already on the tracker:* klmr/box#199 'Callr module sourcing' (open, 2021-04-25; reporter used targets with callr_function = NULL). Seen only via issue search (title, state, body); comments not read.
 
-> This one is a **comment** on an existing open issue (klmr/box#199), not a new issue.
+> Note for you: this one is a **comment** on an existing open issue (klmr/box#199), not a new issue.
 
 <details><summary>Draft body</summary>
 

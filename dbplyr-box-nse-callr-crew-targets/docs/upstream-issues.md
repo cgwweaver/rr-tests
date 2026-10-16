@@ -7,23 +7,29 @@ Short version:
 | 1 | dbplyr | `mod$fn(col)` runs in R and uses a same-named **R object**, not the column | **yes, wrong numbers** | **file** (most important) |
 | 2 | dbplyr | `.sql$fn()` still gets R's translation (`.sql$substr(x, 2, 3)` becomes `SUBSTR(x, 2, 2)`), and strict mode rejects `.sql$` for functions dbplyr doesn't know | **yes** for `substr` / `substring` | **file** (new) |
 | 3 | box | `box::use(base[...])` fails with a cryptic error | no | **file** |
-| 4 | dbplyr | an R vector of length > 1 used as a value becomes an SQL tuple, which gives a DB error or an odd column | mostly no | optional, low priority |
+| 4 | dbplyr | an R vector of length > 1 used as a value becomes an SQL tuple `(10, 20, 30)`, which gives a DB error or an odd column | mostly no | optional, low priority |
 | 5 | dbplyr | "there is no strict mode" | – | **drop**: `options(dplyr.strict_sql = TRUE)` exists |
 | 6 | dbplyr | the unknown-function error has no "not translated" hint | no | **drop** as an issue; use strict mode |
 | 7 | tidyselect | "no deprecation warning on lazy tables" | – | **drop**: my test was wrong |
 
-Mapping to the old README list: 1 was #1. 2 is new (found while re-checking #2). 3 was #3. 4 and 5 were #2. 6 was #4. 7 was #5.
+- Items 1–4 have ready-to-paste drafts with the same numbers in [upstream-drafts.md](upstream-drafts.md). Item 5 has a small docs request instead (draft 5). Items 6 and 7 have no draft.
+- Also drafted: 5 SQL Server / Oracle problems (4 bugs, 1 likely bug) and 2 targets / box notes (drafts 6–12). They are explained the same way [at the end of this page](#also-drafted-sql-server--oracle-bugs-and-targets--box-notes).
+- Old numbers (the upstream list in the first version, PR #2): item 1 was old 1. Item 2 is new (found while re-checking old 2). Item 3 was old 3. Items 4 and 5 were old 2, which had two parts. Item 6 was old 4. Item 7 was old 5.
 
 How I re-checked:
 - I ran each case in its own fresh `Rscript` process, so no warnings, options or modules carried over between cases.
 - dbplyr: CRAN 2.6.0, and the dev version (GitHub main @ f478e20, 2.6.0.9000, which was GitHub HEAD on 2026-10-16) installed into a temporary library. Results were the same on both. The function at the heart of item 1 is identical in both.
 - box 1.2.3. Its code is the same as GitHub main @ 2eb1430.
-- On this page, Oracle and SQL Server results are rendered SQL only. (The [SQL Server / Oracle page](05-sql-server-oracle.md) ran real engines.)
+- In items 1–7, Oracle and SQL Server results are rendered SQL only. The drafts 6–10 section at the end uses the real-engine runs from the [SQL Server / Oracle page](05-sql-server-oracle.md).
 - I searched the upstream issue trackers (read-only). Issue numbers below are ones I actually saw.
 
 ## 1. dbplyr: `mod$fn(col)` silently uses an R object instead of the column (file it)
 
-**What happens.** Before dbplyr writes SQL, it looks at each piece of your code and decides one of two things. Either it is a column, so it goes to SQL. Or it is an R thing, so dbplyr computes it now and pastes in the value. A call whose function is *not a plain name* is always computed in R. Examples: `lst$f(col)`, `mod$fn(col)`, `(\(x) x * 2)(col)`. Inside R, `col` means your R object, not the column.
+**What happens.** Before dbplyr writes SQL, it looks at each piece of your code and decides one of two things:
+- it is a column, so it goes to SQL; or
+- it is an R thing, so dbplyr computes it now and pastes in the value.
+
+A call whose function is *not a plain name* is always computed in R. Examples: `lst$f(col)`, `mod$fn(col)`, `(\(x) x * 2)(col)`. Inside R, `col` means your R object, not the column.
 
 ```r
 library(dplyr); library(dbplyr)
@@ -33,17 +39,17 @@ d    <- memdb_frame(var1 = 1:3)
 d |> mutate(x = lst$f(var1)) |> show_query()
 #> SELECT *, 200.0 AS `x` ...                      <- 100 * 2, computed in R
 d |> mutate(x = lst$f(var1)) |> pull(x)           #> 200 200 200
-collect(d) |> mutate(x = lst$f(var1)) |> pull(x)  #> 2 4 6   (tibble uses the column)
+collect(d) |> mutate(x = lst$f(var1)) |> pull(x)  #> 2 4 6   (in-memory uses the column)
 ```
 
-- **Why it's a problem:** the SQL is valid, the query runs, and the numbers are wrong. There is no warning. The same code is right on a tibble, so tests on local data won't catch it. In a targets pipeline, the wrong values just flow downstream.
+- **Why it's a problem:** the SQL is valid, the query runs, and the numbers are wrong. There is no warning. The same code is right in-memory, so tests on local data won't catch it. In a targets pipeline, the wrong values just flow downstream.
 - **What the docs say:** the help page `?dbplyr::partial_eval` is marked internal, so it is not in the help index.
   - Its description says: *"If the tbl variables are known, and the symbol matches a tbl variable, then remote."*
   - A comment in its Examples says: *"Functions are always assumed to be remote."*
   - This case breaks both. `var1` *is* a column, but the R value is used. And the function is *not* sent to SQL.
   - The real rule appears only in a code comment (*"Compound calls, apart from pronouns and `::` aren't translatable"*, `R/tidyeval.R:225`), followed by `eval_bare(call, env)`.
   - The user-facing vignettes don't mention local evaluation at all.
-- **What you should expect, and why:** either the tibble answer or an error. dbplyr already errors in almost identical cases:
+- **What you should expect, and why:** either the in-memory answer or an error. dbplyr already errors in almost identical cases:
   - `.data$f(var1)` and `.env$f(var1)` give *"Use local() or remote() to force evaluation of functions"* (`R/tidyeval.R:226-231`).
   - `pkg::fn(col)` with no translation has errored since dbplyr 2.5.0 (tidyverse/dbplyr#1426).
   - The silent case is the odd one out.
@@ -65,7 +71,7 @@ collect(d) |> mutate(x = lst$f(var1)) |> pull(x)  #> 2 4 6   (tibble uses the co
   - Use translatable code instead (`var1 * 2`).
   - Or write a verb wrapper with `{{ }}`.
   - Or write a function that *returns code* and splice it in with `!!`.
-  - Or `collect()` first (see `06-escape-hatches.R`).
+  - Or `collect()` first (examples in [06-escape-hatches.md](06-escape-hatches.md#5-applying-a-local-r-function-to-a-database-column)).
   - Build `%in%` lists outside the query (`ids <- c(...)`), because of #1870.
 
 ## 2. dbplyr: `.sql$fn()` is not always "the SQL function" (file it; new)
@@ -119,7 +125,7 @@ box::use(base[nchar])
 #>   no item called "getNamespaceInfo(mod_ns, "lazydata")" on the search list
 ```
 
-`box::use(base)`, `base[...]` and `base[al = nchar]` fail the same way, both at top level and inside modules. Every other default package works in every form (see `07-box-base.R`).
+`box::use(base)`, `base[...]` and `base[nch = nchar]` fail the same way, both at top level and inside modules. Every other default package works in every form (see [07-box-base.md](07-box-base.md)).
 
 - **Why it fails:** box asks R for each package's list of lazy-loaded data sets (`R/use.r:478`). R refuses that question for base (`getNamespaceInfo()` says "operation not allowed on base namespace"), and the error comes out garbled.
 - **Why it's a problem:** mostly it's a papercut, because base is always visible inside modules. But there are real uses:
@@ -134,15 +140,15 @@ box::use(base[nchar])
 - **What you should expect, and why:** it should work like any other package. Failing that, a clear message such as "base is always available; no need to import it".
 - **Scope:** **box only.** It has nothing to do with dbplyr.
   - As far as I can tell, it is not specific to R 4.6. The failing line is box's own code, and R has long refused this for base (`asNamespace(ns, base.OK = FALSE)`).
-  - It has probably been broken since box added lazy-data support (box 1.1.3, klmr/box#219). I inferred this from NEWS; I did not test older versions.
-  - I tested only R 4.6.1 with box 1.2.3 (same code as box main today).
+  - It has been broken since box added lazy-data support (box 1.1.3, klmr/box#219). Tested: I installed box 1.1.2 and 1.1.3 on R 4.6.1. 1.1.2 imports base; 1.1.3 fails with today's error ([07-box-base.md](07-box-base.md#why-it-fails)).
+  - Current box 1.2.3 (same code as box main today) still fails. Older R versions were not run.
 - **Already reported?** I found no issue or PR in klmr/box.
 - **Verdict: file it.** I tested a one-line fix (skip the lazy-data lookup for base). Base imports work with it, and packages with lazy data still work.
 - **Until it's fixed:** inside the module, write `intersect <- base::intersect` (or `nch <- base::nchar`).
 
 ## 4. dbplyr: an R vector of length > 1 becomes an SQL tuple (optional, low priority)
 
-**What happens.**
+**What happens.** A *tuple* is a list of values in brackets, like `(10, 20, 30)`. SQL only accepts it in a few places, such as `IN (...)`.
 
 ```r
 vec3 <- c(10, 20, 30); d <- memdb_frame(v = 1:3)
@@ -153,7 +159,7 @@ d |> filter(v == vec3) |> show_query()  #> ... WHERE (`v` = 10.0, 20.0, 30.0)
 - SQLite gives `row value misused` at `collect()`.
 - duckdb: `filter` errors, but `mutate` **quietly** returns an odd column (a data frame with three constant columns).
 - The Oracle and SQL Server dialects produce the same SQL. I did not run it on those databases.
-- **Why it's a problem:** on a tibble, `mutate(x = vec3)` works (one value per row). So code moved from local data to the database breaks. The error doesn't mention `vec3`, or you get a strange column.
+- **Why it's a problem:** in-memory, `mutate(x = vec3)` works on a 3-row data frame (one value per row). So code moved from local data to the database breaks. The error doesn't mention `vec3`, or you get a strange column.
 - **What the docs say:** `?dbplyr::escape` says it *"will wrap in parens if length > 1"*. That is what makes `col %in% vec3` work, as in the `?partial_eval` example `id %in% ids`. Nothing covers other uses.
 - **What you should expect, and why:** an error when the query is built, for example: "`vec3` has length 3; only single values can be used here. Did you mean `%in%`?" Database rows have no fixed order, so "one value per row" has no meaning there.
 - **Scope:** **dbplyr only.** Strict mode doesn't catch it.
@@ -163,7 +169,9 @@ d |> filter(v == vec3) |> show_query()  #> ... WHERE (`v` = 10.0, 20.0, 30.0)
 
 ## Dropped after re-checking
 
-## 5. "dbplyr has no strict mode": wrong, drop it
+These three were in the first version. Re-checking showed they are wrong or not worth filing.
+
+### 5. "dbplyr has no strict mode": wrong, drop it
 
 - `options(dplyr.strict_sql = TRUE)` makes dbplyr error on any function it can't translate. For example, `mutate(x = myfun(var1))` gives *"Don't know how to translate `myfun()`"*.
 - When: `mutate()` itself still runs. The error comes when dbplyr writes the SQL (`show_query()`, `collect()`, ...), before anything is sent to the database. So you get dbplyr's clear message instead of the database's.
@@ -175,8 +183,9 @@ d |> filter(v == vec3) |> show_query()  #> ... WHERE (`v` = 10.0, 20.0, 30.0)
   - It blocks `.sql$` for functions dbplyr doesn't know (2).
   - It also blocks SQL operators that the same vignette shows, such as `x %LIKE% "a%"`. Use `str_like(x, "a%")` instead, which works in strict mode.
 - It is still useful during development and in tests: `withr::local_options(dplyr.strict_sql = TRUE)`.
+- Optional docs request instead (draft 5): the option is only in a vignette, so ask dbplyr to list it in the help pages too.
 
-## 6. "the unknown-function error has no hint": don't file
+### 6. "the unknown-function error has no hint": don't file
 
 - **What happens:** with `myfun <- \(x) x * 2`, running `d |> mutate(x = myfun(var1)) |> collect()` gives *"Failed to collect lazy table. Caused by error: ! no such function: myfun"* (SQLite). duckdb says *"Scalar Function with name myfun does not exist!"*. Nothing says "this is an R function that dbplyr didn't translate". The dev version is the same.
 - **What the docs say:** passing unknown functions through is a documented feature: *"Any function that dbplyr doesn't know how to convert is left as is."* (`vignette("translation-function")`).
@@ -187,20 +196,100 @@ d |> filter(v == vec3) |> show_query()  #> ... WHERE (`v` = 10.0, 20.0, 30.0)
 - **Scope:** **dbplyr only.**
 - **Verdict:** drop. Use strict mode and `show_query()` while developing.
 
-## 7. "tidyselect doesn't warn on lazy tables": my test was wrong, drop it
+### 7. "tidyselect doesn't warn on lazy tables": my test was wrong, drop it
 
-- In the original run, the tibble case ran first in the same R session. This deprecation warning is shown **only once per session**, so the database cases after it were silent.
+- In the original run, the in-memory case ran first in the same R session. This deprecation warning is shown **only once per session**, so the database cases after it were silent.
 - Re-test, with one fresh `Rscript` per case:
   - SQLite alone: warns.
   - duckdb alone: warns.
-  - tibble alone: warns.
-  - tibble then SQLite, or SQLite then tibble: only the first one warns.
+  - in-memory alone: warns.
+  - in-memory then SQLite, or SQLite then in-memory: only the first one warns.
   - With `options(lifecycle_verbosity = "warning")`: all warn.
 - `?lifecycle::deprecate_soft` says: *"Warnings are only issued once per session to avoid overwhelming the user."*
-- So the earlier line in the old README saying dbplyr gives no warning was wrong.
+- So the line in the first version saying dbplyr gives no warning was wrong.
 - **What I found instead (box + tidyverse deprecations):** inside a **box module**, this warning never shows, not even with `lifecycle_verbosity = "warning"`.
   - Soft deprecations only warn for code that lives in the global environment (or in a package's tests), and box modules don't.
   - `?lifecycle::deprecate_soft` says so: *"`deprecate_soft()` warns only if the deprecated function is called directly, i.e. a user is calling a function they wrote in the global environment or a developer is calling it in their package."*
   - But `?lifecycle::verbosity` says `"warning"` means *"warn every time"*. That is not true here. So the lifecycle help is a bit misleading. This is not a box or dbplyr bug.
   - Only `options(lifecycle_verbosity = "error")` makes it visible (as an error).
   - Tip: turn that option on for a test run to find deprecated calls in your modules. Be aware that it turns *every* soft deprecation into an error, including ones inside other packages you use.
+
+## Also drafted: SQL Server / Oracle bugs and targets / box notes
+
+Same questions, shorter. Evidence: [05-sql-server-oracle.md](05-sql-server-oracle.md#upstream-candidates-drafted-not-filed) (drafts 6–10) and [04-targets.md](04-targets.md) (drafts 11–12). Ready-to-paste text: drafts 6–12 in [upstream-drafts.md](upstream-drafts.md).
+
+| draft | package | the problem in one line | silent? | verdict |
+|---|---|---|---|---|
+| 6 | dbplyr | `union()` / `union_all()` / `bind_queries()` never finish with `dialect_mssql()` | no, R hangs | file |
+| 7 | dbplyr | Oracle `difftime()` gives the number of days with the sign flipped | **yes, wrong numbers** | file |
+| 8 | dbplyr | Oracle `x %% 2` becomes `x % 2`, which Oracle rejects | no | file |
+| 9 | dbplyr | SQL Server `arrange(is.na(x))` writes invalid SQL | no | file |
+| 10 | dbplyr | Oracle: an R date put into a query is sent as plain text | no: an error (it works only if your session's date format happens to match) | file, as a "likely bug" |
+| 11 | targets | `tar_option_set(imports = "dplyr")` breaks the whole pipeline | no | optional, low priority |
+| 12 | box | `box::use(mods/x)` at the top of `_targets.R` can't find the module under `tar_make()` | no | add a comment to the open issue klmr/box#199 |
+
+### Draft 6. dbplyr: unions hang with `dialect_mssql()`
+
+- **What happens:** with a fake SQL Server table (`lazy_frame(..., con = dialect_mssql())`), `show_query()` of a `union_all()` never returns. R runs at 100% CPU until you kill it.
+- **Why it's a problem:** you lose your R session, with no message.
+- **What the docs say:** `?"backend-mssql"` tells you to use `dialect_mssql()` with `lazy_frame()` to see SQL Server SQL. Nothing says unions are not supported.
+- **What to expect:** the same SQL that `simulate_mssql()` gives.
+- **Scope:** **dbplyr only**, and only when you **simulate** SQL Server. A real connection is not affected (expected from the code; checked on duckdb with `with_dialect()`, not on a live SQL Server).
+- **Until it's fixed:** use `simulate_mssql()` for queries with unions.
+
+### Draft 7. dbplyr: Oracle `difftime()` has the sign flipped
+
+- **What happens:** `difftime(dt, as.Date("2024-01-02"), units = "days")` gave 1, 0, -30, -58 on Oracle. R and SQL Server gave -1, 0, 30, 58.
+- **Why it's a problem:** the query runs and the numbers look plausible. "Days late" silently becomes "days early".
+- **What the docs say:** R's `difftime(time1, time2)` is `time1 - time2`. dbplyr fixed the same bug for SQL Server, Snowflake and Redshift (tidyverse/dbplyr#1525, closed), but not for Oracle.
+- **What to expect:** the same sign as R.
+- **Scope:** **dbplyr's Oracle translation only.**
+- **Until it's fixed:** on Oracle, write `dt - as.Date(!!chr)`.
+
+### Draft 8. dbplyr: Oracle `%%` becomes `%`
+
+- **What happens:** `x %% 2` becomes `"x" % 2`. Oracle fails with `ORA-00911` ("invalid character").
+- **Why it's a problem:** the error is loud, but it does not tell you that the modulo is the cause.
+- **What to expect:** `MOD(x, 2)`, Oracle's modulo function.
+- **Scope:** **dbplyr's Oracle translation only.**
+- **Until it's fixed:** `.sql$MOD(x, 2L)`.
+
+### Draft 9. dbplyr: SQL Server `arrange()` on TRUE/FALSE
+
+- **What happens:** `arrange(is.na(x))` becomes `ORDER BY ([x] IS NULL)`. SQL Server rejects it as a syntax error.
+- **Why it's a problem:** `arrange(is.na(x))` is a common R way to put missing values last or first.
+- **What to expect:** valid SQL. SQL Server can't sort by a TRUE/FALSE condition directly, so dbplyr already turns it into a 1/0 `BIT` value in `SELECT`. It forgets to do that in `ORDER BY`. With that step added, the SQL ran on SQL Server 2022.
+- **Scope:** **dbplyr's SQL Server translation only.**
+- **Until it's fixed:** `arrange(if_else(is.na(x), 1L, 0L), x)`.
+
+### Draft 10. dbplyr: Oracle dates from R are sent as text
+
+- **What happens:** `filter(dt <= !!cutoff)`, with an R `Date`, becomes `"dt" <= '2024-01-02'`. Oracle reads that text with the session's date format (`NLS_DATE_FORMAT`). With the default `DD-MON-RR` it fails: `ORA-01861`.
+- **Why it's a problem:** the most natural way to filter by an R date fails on Oracle. Whether it works depends on a session setting you may not know about.
+- **What the docs say:** nothing says R dates need converting. `as.Date("...")` written inside the query already becomes `DATE '...'` (fixed in tidyverse/dbplyr#1468 and #1389).
+- **What to expect:** `DATE '2024-01-02'`.
+- **Scope:** **dbplyr's Oracle translation only.** SQL Server converts the text itself, so it works there.
+- **Why "likely bug":** the maintainers may say it is by design. Then it is a docs fix.
+- **Until it's fixed:** `filter(dt <= as.Date(!!format(cutoff)))`.
+
+### Draft 11. targets: `tar_option_set(imports = "dplyr")` fails
+
+- **What happens:** `tar_make()` stops with `igraph::is_dag(graph) is not TRUE`.
+- **Why it's a problem:** the message gives no clue. The cause: dplyr has two pairs of internal functions that call each other, and targets refuses loops between imported functions.
+- **What the docs say:** `?tar_option_set` says targets "tracks every dataset and every object in the package namespace as if it were part of the global namespace". It lists 4 limits. Loops between functions are not one of them.
+- **What to expect:** it works, or a clear error that names the functions.
+- **Scope:** **targets only.** It hits any package with functions that call each other. Nothing to do with box or crew.
+- **You don't need it:** `imports` only *tracks* functions. It does not load anything. To load packages, use `tar_option_set(packages =)`.
+
+### Draft 12. box: modules not found when `tar_make()` runs `_targets.R`
+
+- **What happens:** `tar_make()` runs `_targets.R` in a fresh R started by callr, as `R -f /tmp/.../callr-scr-...`. box takes that temp folder as "the script's folder". So `box::use(mods/x)` fails with `unable to load module`.
+- **Why it's a problem:** the same file works with `tar_make(callr_function = NULL)`. The error names a temp folder, not your project.
+- **What the docs say:** `?box::use` says that for an R file run from the command line, box uses that file's folder. Under callr, that file is a temp file, not your `_targets.R`.
+- **What to expect:** box ignores callr's temp script and uses the working directory. It already does that for crew workers (started with `Rscript -e`).
+- **Scope:** **box + callr.** targets hits it because `tar_make()` uses callr. crew is not involved.
+- **Already reported:** klmr/box#199 "Callr module sourcing" (open since 2021). So add a comment there, not a new issue.
+- **Until it's fixed:** `options(box.path = getwd())` at the top of `_targets.R`. If `R_BOX_PATH` is set on your machine, add the project folder to it instead (see [04-targets.md](04-targets.md#second-trap-box-cannot-find-modules-from-_targetsr-even-without-crew)).
+
+---
+[← back to README](../README.md) · [ready-to-paste drafts](upstream-drafts.md) · [cheat sheet](../CHEATSHEET.md)

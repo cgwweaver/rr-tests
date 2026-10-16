@@ -5,9 +5,12 @@ Script: `05-dialects.R` → `results/05-dialects.csv`.
 ## Short version
 
 - You can see SQL Server or Oracle SQL without a database: `lazy_frame(..., con = dialect_mssql())` or `dialect_oracle()`, then `show_query()`.
-- I rendered 87 small dplyr snippets for 6 dialects: SQL Server 15 and 17 (2025), Oracle, Postgres, duckdb and SQLite. The snippets are the Part 1 NSE cases plus common SAS-to-R ETL steps.
+- I rendered 87 small dplyr snippets for 6 dialects: SQL Server 15 and 17 (2025), Oracle, Postgres, duckdb and SQLite. The snippets are the 15 NSE cases from [01-nse.md](01-nse.md) plus 72 common SAS-to-R ETL steps.
 - Then I **ran** every query that rendered on real engines in Docker: SQL Server 2022, SQL Server 2025 and Oracle Free 26ai, plus duckdb and SQLite. Postgres was rendered only.
-- **SQL that renders is not SQL that works.** Some snippets rendered with no error but failed when run: 11 of the 87 on SQL Server 2022, 10 on SQL Server 2025 and 12 on Oracle. A few of these are wrong on purpose (`foo()`, `Sys.Date()`, an escape hatch meant for the other database). Others ran but gave a different answer than R.
+- **SQL that renders is not SQL that works.** Some snippets rendered with no error but failed when run:
+  - 11 of the 87 on SQL Server 2022, 10 on SQL Server 2025 and 12 on Oracle (about 1 in 8).
+  - A few of these are wrong on purpose (`foo()`, `Sys.Date()`, an escape hatch meant for the other database).
+  - Others ran, but gave a different answer than R.
 - I found 4 dbplyr bugs and 1 likely bug. They are drafted under "Upstream candidates" below. None are filed.
 
 ## What was verified, and how
@@ -22,8 +25,11 @@ Script: `05-dialects.R` → `results/05-dialects.csv`.
   - `render`: ok / warning / error / hang
   - `render_error`
   - `exec`: ok / error / not run
-  - `exec_value`: the rows as `a|b; ...`. For `mutate()` cases it shows only `id|new column`. Text from SQL Server and Oracle loses its **trailing spaces** in this column (a side effect of how `sqlcmd`/`sqlplus` output is read). So compare lengths, not the shown text.
-- To run the queries again, start the 3 containers listed at the top of `05-dialects.R`, with the Docker daemon running. Without them the script still renders everything and runs duckdb and SQLite. But it then **overwrites the CSV** and the SQL Server/Oracle `exec` columns become "not run". It takes about 2 minutes. 72 seconds of that is waiting out the hang bug below.
+  - `exec_value`: the rows as `a|b; ...`. For `mutate()` cases it shows only `id|new column`.
+    - Text from SQL Server and Oracle loses its **trailing spaces** in this column (a side effect of how `sqlcmd`/`sqlplus` output is read). So compare lengths, not the shown text.
+- To run the queries again, start the 3 containers listed at the top of `05-dialects.R`, with the Docker daemon running. It takes about 2 minutes (72 seconds of that is waiting out the hang bug below).
+  - Without the containers, the script still renders everything and runs duckdb and SQLite.
+  - But it then **overwrites the CSV**, and the SQL Server/Oracle `exec` columns become "not run".
 - I re-ran the script with all engines up. It gave the same CSV, except for row order in duckdb queries that have no `ORDER BY`.
 
 ## How to simulate SQL Server / Oracle (dbplyr 2.6.0)
@@ -72,7 +78,7 @@ dbplyr calls `sql_dialect(con)`:
   - **Oracle fails with `ORA-01861: literal does not match format string`.** A `POSIXct` fails the same way. Oracle reads date strings using `NLS_DATE_FORMAT`, which was `DD-MON-RR` here.
 - Fix for SQL Server and Oracle: `filter(dt <= as.Date(!!format(cutoff)))`. Oracle gets `DATE '2024-01-02'` and SQL Server gets `TRY_CAST('2024-01-02' AS DATE)`.
   - It returned the right rows on SQL Server 2022, SQL Server 2025, Oracle and duckdb.
-  - **On SQLite it runs but returns 0 rows.** SQLite turns `CAST('2024-01-02' AS DATE)` into the number 2024, and it stores R dates as day numbers. (SQLite has no date type; see Part 1.)
+  - **On SQLite it runs but returns 0 rows.** SQLite turns `CAST('2024-01-02' AS DATE)` into the number 2024, and it stores R dates as day numbers. (SQLite has no date type; see [01-nse.md](01-nse.md#where-database-and-in-memory-differ).)
 - **SQL Server with French as the language:** under `SET LANGUAGE French`, `CAST('2024-01-02' AS DATETIME)` gives **2024-02-01**. Day and month are swapped. `CAST(... AS DATE)` and `CAST(... AS DATETIME2)` are fine. So comparing a string date to a `DATETIME` column depends on the login language. (This was a raw SQL check, not a dbplyr query.)
 - `Sys.Date()` inside a query fails on every engine when run. Use one of these instead:
   - `today()`: translated to `CAST(SYSDATETIME() AS DATE)` on SQL Server and `TRUNC(CURRENT_TIMESTAMP)` on Oracle. It ran with no error on both. (Weak test: all test dates are in 2024, so every row passes.)
@@ -104,9 +110,15 @@ dbplyr calls `sql_dialect(con)`:
 - Regex:
   - `str_detect(x, "^a")` **fails at render** on SQL Server before 2025, on Oracle and on SQLite: "Only fixed patterns are supported".
   - On SQL Server 2025 it becomes `REGEXP_LIKE` and ran correctly.
-  - **But `REGEXP_LIKE` needs database compatibility level 170.** On SQL Server 2025, in a database set to level 160 (common after an upgrade), it failed with `Msg 195 'REGEXP_LIKE' is not a recognized built-in function name`. `REGEXP_REPLACE` (used by `str_replace()`) still worked at level 160. dbplyr chooses the version from the *server* version, not the database level. Check with `SELECT compatibility_level FROM sys.databases WHERE name = DB_NAME()`. If it is below 170, use `with_dialect(con, dialect_mssql("16.0"))` and `fixed()` patterns. (Raw SQL check, not in the CSV.)
+  - **But `REGEXP_LIKE` needs database compatibility level 170.** (The compatibility level is a per-database setting that decides which SQL features that database accepts.)
+    - On SQL Server 2025, in a database set to level 160 (common after an upgrade), it failed with `Msg 195 'REGEXP_LIKE' is not a recognized built-in function name`.
+    - `REGEXP_REPLACE` (used by `str_replace()`) still worked at level 160.
+    - dbplyr chooses the version from the *server* version, not the database level.
+    - Check with `SELECT compatibility_level FROM sys.databases WHERE name = DB_NAME()`. If it is below 170, use `with_dialect(con, dialect_mssql("16.0"))` and `fixed()` patterns.
+    - (Raw SQL check, not in the CSV.)
   - On Oracle use `.sql$REGEXP_LIKE(name, "^a")`. It ran correctly on Oracle and on SQL Server 2025.
-  - `str_detect(x, fixed("ph"))` works everywhere. SQL Server uses `CHARINDEX` and Oracle uses `INSTR`, which are true fixed matches. **On duckdb, `fixed()` is ignored.** `fixed(".")` became `REGEXP_MATCHES(x, '.')` and matched every row. So a pattern with `.`, `(`, `+` and so on can give different rows on local duckdb than on SQL Server/Oracle.
+  - `str_detect(x, fixed("ph"))` works everywhere. SQL Server uses `CHARINDEX` and Oracle uses `INSTR`, which are true fixed matches.
+  - **On duckdb, `fixed()` is ignored.** `fixed(".")` became `REGEXP_MATCHES(x, '.')` and matched every row. So a pattern with `.`, `(`, `+` and so on can give different rows on local duckdb than on SQL Server/Oracle.
 - `grepl()` is not translated for SQL Server, Oracle or SQLite. It is passed through and fails when run. Use `str_detect()`.
 
 **Numbers**
@@ -162,7 +174,7 @@ dbplyr calls `sql_dialect(con)`:
 - `setdiff()` becomes `MINUS` on Oracle and `EXCEPT` elsewhere. It ran correctly.
 - `union()`, `union_all()` and `bind_queries()` ran correctly everywhere. Because of the hang bug, the SQL Server SQL for these came from `simulate_mssql()`.
 
-**Part 1 NSE cases on the new dialects**
+**The NSE cases from 01-nse.md on the new dialects**
 
 - A global vector of length > 1 used as a value renders `(10.0, 20.0, 30.0)`. That is a syntax error on SQL Server (`Msg 102`), on Oracle (`ORA-00907`) and on SQLite.
 - An NA global in a comparison becomes `= NULL`, which returns 0 rows on every engine.
@@ -191,7 +203,7 @@ show_query(q, sql_options = sql_options(qualify_all_columns = TRUE))
 collect(q, sql_options = sql_options(cte = TRUE))                # same data as collect(q)
 ```
 
-- `cte = TRUE`: each step becomes a named block, `WITH q01 AS (...), q02 AS (...) SELECT ...`, instead of nested subqueries. Use it to read or debug long pipelines, or to paste the SQL into SSMS or SQL Developer. It ran on SQL Server and Oracle.
+- `cte = TRUE`: each step becomes a named block, `WITH q01 AS (...), q02 AS (...) SELECT ...`, instead of nested subqueries. (CTE = "common table expression", SQL's name for a `WITH` block.) Use it to read or debug long pipelines, or to paste the SQL into SSMS or SQL Developer. It ran on SQL Server and Oracle.
 - `use_star = FALSE`: lists every column name instead of `*` (or `"q01".*` on Oracle). Use it to see exactly which columns flow through, or when someone will maintain the SQL by hand.
 - `qualify_all_columns = TRUE`: writes `"df"."grp"` instead of `"grp"` inside joins. By default, only columns that are in both tables get the table prefix. Use it if you copy the SQL and add more joins by hand, so no column is ambiguous.
 - The old `cte =` argument of `show_query()`, `remote_query()`, `collect()` and `compute()` is deprecated, and it warns in a fresh session. Use `sql_options = sql_options(cte = TRUE)` instead.
@@ -238,16 +250,22 @@ WHERE ("z" > 2.0)
   - A later `sql_render()` did not change it.
   - A later `collect()` on SQLite replaced it.
 - `collect(sql_options = ...)` and `compute(sql_options = ...)` change only the SQL text (see above).
-- In this repo, the harness (`R/harness.R`) records `sql_render()`. That is fine for duckdb and SQLite, where the text was the same in all 87 cases. For SQL Server, `05-dialects.R` records `remote_query()` instead. It flags the 6 rows where the two differ in the `sql_render_differs` column.
+- In this repo, the harness (`R/harness.R`) records `sql_render()`. That is fine for duckdb and SQLite, where the text was the same in all 87 cases. For SQL Server, `05-dialects.R` records `remote_query()` instead. It flags the 6 rows where the two differ in the `sql_render_differs` column: `filter(flag)`, `filter(!flag)` and `filter(flag & var1 > 2)`, each on SQL Server 15 and 17.
 
-## Upstream candidates (drafted, **not filed**; full drafts in [upstream-drafts.md](upstream-drafts.md))
+## Upstream candidates (drafted, not filed)
+
+Plain-language version (why it's a problem, what to expect, which package): [upstream-issues.md](upstream-issues.md#also-drafted-sql-server--oracle-bugs-and-targets--box-notes). Ready-to-paste text: items 1–5 below are drafts 6–10 in [upstream-drafts.md](upstream-drafts.md).
+
 
 1. **dbplyr: `union()`, `union_all()` and `bind_queries()` hang with `dialect_mssql()`.** Root cause: the SQL Server fix-up step walks every list inside the query. That reaches the dialect's `version` field, a `numeric_version`, whose first element is itself. So the walk never ends.
    - Fix note (tested by patching locally): stopping the walk at *every* classed object is **not** a good fix. It drops the BIT cast on the right-hand side of a union (`WHERE ([f])`). Skipping only `numeric_version` / `sql_dialect` / `DBIConnection` objects fixed the hang and kept the cast in both unions and joins.
 2. **dbplyr: Oracle `difftime()` has the sign flipped.** It renders `time2 - time1` (`R/backend-oracle.R:197-209`). The same bug was fixed for SQL Server, Snowflake and Redshift in tidyverse/dbplyr#1525 (closed).
 3. **dbplyr: Oracle `%%` renders `%`**, which gives `ORA-00911`. It should be `MOD()`.
 4. **dbplyr: SQL Server `arrange()` on a TRUE/FALSE expression gives an invalid `ORDER BY`.** The main `ORDER BY` is translated without the "ORDER" context that the SQL Server BIT logic checks for (`R/query-select.R:130`). With that context, dbplyr produces `CAST(CASE WHEN ([x] IS NULL) THEN 1 ELSE 0 END AS BIT)`, and that SQL ran on SQL Server 2022.
-5. **dbplyr (likely bug): on Oracle, `Date` and `POSIXct` values put into a query are written as plain strings.** They only work if the session's `NLS_DATE_FORMAT` happens to match. Postgres already has its own date escaping (`R/backend-postgres.R:496`, renders `'2024-01-02'::date`); Oracle has none. `as.Date("...")` inside a query was already fixed to `DATE '...'` (tidyverse/dbplyr#1468 and #1389, both closed). Related, also closed: #1213 "Dates in MS SQL aren't escaped properly" and #727 "Dates escaped incorrectly in Postgres" (titles seen, bodies not read).
+5. **dbplyr (likely bug): on Oracle, `Date` and `POSIXct` values put into a query are written as plain strings.** They only work if the session's `NLS_DATE_FORMAT` happens to match.
+   - Postgres already has its own date escaping (`R/backend-postgres.R:496`, renders `'2024-01-02'::date`). Oracle has none.
+   - `as.Date("...")` inside a query was already fixed to `DATE '...'` (tidyverse/dbplyr#1468 and #1389, both closed).
+   - Related, also closed: #1213 "Dates in MS SQL aren't escaped properly" and #727 "Dates escaped incorrectly in Postgres" (titles seen, bodies not read).
 - Possible doc note, not a bug: SQL Server 2025 regex translations assume database compatibility level 170 (see "Strings"). The feature came from tidyverse/dbplyr#1671 "support SQL Server 2025 regexp functions?" (closed). I found no issue about compatibility levels.
 
 ## Caveats

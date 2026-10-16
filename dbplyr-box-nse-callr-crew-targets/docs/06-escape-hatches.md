@@ -5,7 +5,7 @@ Run it with `Rscript 06-escape-hatches.R`, then `testthat::test_file("tests/test
 
 ## 1. Is there a strict option? Yes, one: `dplyr.strict_sql`
 
-**This corrects the old README.** dbplyr 2.6.0 has one strictness switch. Its name starts with `dplyr.`, not `dbplyr.`. That is why a search for `dbplyr.*` options missed it.
+**This corrects the first version of this README (PR #2).** dbplyr 2.6.0 has one strictness switch. Its name starts with `dplyr.`, not `dbplyr.`. That is why a search for `dbplyr.*` options missed it.
 
 ```r
 options(dplyr.strict_sql = TRUE)
@@ -17,8 +17,10 @@ What it does (run on duckdb and SQLite; only rendered for Oracle and SQL Server,
 - **It also blocks `.sql$instr(name, "a")`.** `.sql$` only removes the prefix, so the strict check still sees an unknown `instr()`. `.sql$abs()` still works, because dbplyr knows `abs`. In strict mode, write unknown database functions as `sql("instr(name, 'a')")`.
 - **It does not catch the silent wrong result ([01-nse.md](01-nse.md#silent-wrong-result)).** `mutate(x = lst$f(var1))` still gives 200. That call runs in R before translation starts.
 - The cost for Oracle and SQL Server users: anything you used to pass through (`NVL()`, `TO_CHAR()`, `DATEDIFF()`, `%like%`) must now go inside `sql("...")`.
-- Two limits of `sql("...")`. dbplyr does not touch the text, so column names are not quoted for you. In a grouped `mutate()` it gets no `OVER (PARTITION BY ...)`, and neither do `.sql$fn()` or unknown functions (tidyverse/dbplyr#1526, open). `sum()` does get one.
-- It does nothing to plain tibbles.
+- Two limits of `sql("...")`:
+  - dbplyr does not touch the text, so column names are not quoted for you.
+  - In a grouped `mutate()` it gets no `OVER (PARTITION BY ...)` (the SQL that makes a value per group). Neither do `.sql$fn()` or unknown functions (tidyverse/dbplyr#1526, open). `sum()` does get one.
+- It does nothing in-memory (plain data frames).
 - Source: `dbplyr/R/translate-sql.R:149`. It is documented only in the "Function translation" vignette (`vignettes/translation-function.Rmd:311-319`), not in any help page.
 
 ## 2. Options that matter for this topic
@@ -51,7 +53,7 @@ Also:
 
 The global is `var1 <- 100`. The column `var1` is 1, 2, 3. Results are the same on duckdb and SQLite.
 
-| code | tibble | duckdb / SQLite | notes |
+| code | in-memory | duckdb / SQLite | notes |
 |---|---|---|---|
 | `sql("var1 * 2")` | **a text column holding the SQL, silent** | 2, 4, 6 | raw SQL. Names are not quoted for you |
 | `sql(paste(colname, "* 2"))` | text column | 2, 4, 6 | the arguments of `sql()` run in R |
@@ -64,7 +66,7 @@ The global is `var1 <- 100`. The column `var1` is 1, 2, 3. Results are the same 
 | `.data$var1`, `.data[[colname]]` | 1, 2, 3 | 1, 2, 3 | the column, on both. Safe |
 | `.data$f(var1)` | error | error: `Use local() or remote() to force evaluation of functions` | |
 | `I(var1)` | 1, 2, 3 | execute error: `no such function: I` | `I()` is for table names (`tbl(con, I("schema.tab"))`), not for expressions |
-| `!!sql_glue2(remote_con(d), "{.id colname} * {k}")` | error (a tibble has no connection) | 2, 4, 6, SQL `` `var1` * 2.0 `` | safe way to build SQL. `{.id x}` quotes a name; `{x}` escapes a value (`'alpha'' OR ''1''=''1'`). `con` can also be a dialect, e.g. `dialect_oracle()`. Its help page says it is meant for people who extend dbplyr, but it works here |
+| `!!sql_glue2(remote_con(d), "{.id colname} * {k}")` | error (a data frame has no connection) | 2, 4, 6, SQL `` `var1` * 2.0 `` | safe way to build SQL. `{.id x}` quotes a name; `{x}` escapes a value (`'alpha'' OR ''1''=''1'`). `con` can also be a dialect, e.g. `dialect_oracle()`. Its help page says it is meant for people who extend dbplyr, but it works here |
 | `sql_glue2(...)` without `!!` | error | render error: ``Cannot translate a <tbl_...> object`` | always splice it with `!!` |
 | `sql_glue("...")` (run on its own) | error everywhere | | it needs the connection that is only set while dbplyr translates (for backend authors) |
 
@@ -76,15 +78,20 @@ Before dbplyr writes any SQL, it walks your code (`partial_eval()`, `dbplyr/R/ti
 - **`.sql$f(...)`** becomes the SQL function `f`, and its arguments follow these same rules. (232-233)
 - **`local(expr)`** runs `expr` in R. **`remote(x)`** keeps `x` for SQL as-is. **`sql(...)`** runs its arguments in R and pastes in the resulting text. So a name inside `local()` or `sql()` means the R object, not the column. (257-262)
 - **A call with a plain name, `f(...)`**, is kept for translation, and its arguments follow these same rules. If dbplyr does not know `f`, it is sent to SQL as-is, unless `dplyr.strict_sql` is on. (277)
-- **A call whose function part is not a plain name** (`lst$f(...)`, `mod$f(...)`, `(\(x) x * 2)(...)`, `(!!f)(...)`) **runs in R right away, as a whole.** The data is never consulted, so `var1` inside it means the R object, not the column. (225-236, and 215-220 for an injected function object.) There are three exceptions. `pkg::f()` and `.sql$f()` are translated by name. An injected function that is identical to one dbplyr knows (e.g. `(!!mean)(x)`) is translated too.
+- **A call whose function part is not a plain name** (`lst$f(...)`, `mod$f(...)`, `(\(x) x * 2)(...)`, `(!!f)(...)`) **runs in R right away, as a whole.** The data is never consulted, so `var1` inside it means the R object, not the column. (225-236, and 215-220 for an injected function object.) There are three exceptions:
+  - `pkg::f()` is translated by name.
+  - `.sql$f()` is translated by name.
+  - An injected function that is identical to one dbplyr knows (e.g. `(!!mean)(x)`) is translated too.
 
-dplyr on a tibble evaluates everything inside the data, so the same code can give different answers on a tibble and on a database. tidyverse/dbplyr#200 (see section 6 below) stopped local evaluation of subsetting (`x$y`, `x[[i]]`) in dbplyr 1.4.0 (NEWS.md). A call whose head is `x$y`, such as `lst$f(var1)`, is still run locally.
+In-memory dplyr evaluates everything inside the data, so the same code can give different answers in-memory and on a database.
+
+History: tidyverse/dbplyr#200 (see section 6 below) stopped local evaluation of subsetting (`x$y`, `x[[i]]`) in dbplyr 1.4.0 (NEWS.md). A call whose head is `x$y`, such as `lst$f(var1)`, is still run locally.
 
 ## 5. Applying a local R function to a database column
 
 None of the "wrappers" fixes the silent wrong result. Results:
 
-| code | tibble | duckdb / SQLite |
+| code | in-memory | duckdb / SQLite |
 |---|---|---|
 | `lst$f(var1)` | 2, 4, 6 | **200, 200, 200, silent** |
 | `local(lst$f(var1))` | 2, 4, 6 | **200, silent** |
@@ -95,7 +102,7 @@ None of the "wrappers" fixes the silent wrong result. Results:
 | `lst$f(remote(var1))` | error | error: `could not find function "remote"` |
 | `f <- lst$f; f(var1)` | 2, 4, 6 | execute error: `no such function: f` (with strict mode: render error) |
 
-The correct ways, in order of preference. All give 2, 4, 6 on tibble, duckdb and SQLite:
+The correct ways, in order of preference. All give 2, 4, 6 in-memory, on duckdb and on SQLite:
 1. **Write it as code dbplyr can translate:** `mutate(x = var1 * 2)`.
 2. **Make the helper return code, not a value, then splice it with `!!`.** This also works as a box module function. I checked `!!mod$double_expr(var1)` with a real module: 2, 4, 6, SQL `` `var1` * 2.0 ``.
    ```r
@@ -122,7 +129,7 @@ Upstream discussion I found. I could only read titles and states, plus a few ope
 - tidyverse/dplyr#2949 "error/warning/message on variable from environment / column ambiguity in filter" (closed, 2017). This is the same request. No such warning exists in dplyr 1.2.1.
 - tidyverse/dplyr#6885 "Unexpected behavior in `filter()` when column name matches an environment variable" (closed, 2023). The reporter asked for a warning on `filter(cyl == cyl)`.
 - tidyverse/dplyr#2591 ".data and .env need strict matching semantics" (closed, 2017). tidyverse/dplyr#3814 "Stronger `.data` pronoun" (closed, 2018).
-- tidyverse/dbplyr#200 "Reconsider local evaluation" (closed, 2019). It proposed ending local evaluation of `pkg::bar()` and `x$y`, and deprecating `local()`, which it called "basically equivalent to `!!`". On a tibble they are not equivalent (6.3).
+- tidyverse/dbplyr#200 "Reconsider local evaluation" (closed, 2019). It proposed ending local evaluation of `pkg::bar()` and `x$y`, and deprecating `local()`, which it called "basically equivalent to `!!`". In-memory they are not equivalent (see the `local(var1)` row in section 3).
 - tidyverse/dbplyr#1426 "Make namespaced functions error if no translation?" (closed).
 - tidyverse/dbplyr#1526 "sql escape for 'non-translated' function in window context" (open): `sql()` gets no `OVER` clause in a grouped `mutate()`.
 - I found no issue about any of these: a column/object clash warning in dbplyr, the `lst$f(col)` silent result, `.sql$` being blocked in strict mode, a lintr linter that understands data masking, or a strict data mask in rlang.
@@ -166,7 +173,7 @@ False positives:
 - A common name used both as a column and as a variable (`year`, `id`, `n`) always warns, even when you meant the column. That is the point (write `.data$year`), but old scripts will be noisy.
 - A column that happens to share a name with something from base R or an attached package (`letters`, a dataset name) warns too.
 - `!!sym("var1")` warns, because after injection it looks like a bare name. Use `.data[["var1"]]` instead.
-- `local(var1)` warns. That is correct: it means the column on a tibble and the object on a database.
+- `local(var1)` warns. That is correct: it means the column in-memory and the object on a database.
 
 What it misses:
 - It runs only on code that goes through `check_ambiguity()` or the `*_chk()` verbs. It is not a linter.
