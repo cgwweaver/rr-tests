@@ -39,6 +39,7 @@ test_that("crew: box::use() at top of _targets.R does not reach workers; inside 
   expect_match(run_variant("pkg_box_top", crew = TRUE), "could not find function .mutate.")
   expect_equal(run_variant("pkg_box_in_fn", crew = TRUE), "ok")
   expect_equal(run_variant("pkg_library_top", crew = TRUE), "ok")      # library() IS shipped via packages = (.packages())
+  expect_equal(run_variant("pkg_box_top_rargs", crew = TRUE), "ok")    # same box::use run on each worker via r_arguments -e
 })
 
 test_that("crew: a module object (box::use(mods/x) at top) is shipped; attached module names and box.path are not", {

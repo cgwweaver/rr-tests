@@ -20,6 +20,10 @@ tg <- \(out = "add_x(raw)", deploy = NULL, extra = NULL) {
     sprintf("  tar_target(out, %s%s),", out, dep),
     sprintf('  tar_target(ran_on, Sys.getenv("CREW_CONTROLLER", "main process")%s)', dep), ")")
 }
+# crew has no "run this on every worker" option, but extra `-e` code in r_arguments runs before crew_worker()
+rargs <- \(setup) c(paste("worker_setup <-", setup),
+  r"(if (Sys.getenv("USE_CREW") == "true") tar_option_set(controller = crew::crew_controller_local(name = "crew",)",
+  r"(  workers = 2, seconds_idle = 10, r_arguments = c("--no-save", "--no-restore", "-e", worker_setup))))")
 v <- \(variant, about, setup, tgts = tg(), files = list(), edit = NA_character_, modes = c("none", "crew"))
   tibble(variant, about, setup = list(setup), tgts = list(tgts), files = list(files), edit, modes = list(modes))
 
@@ -50,6 +54,8 @@ variants <- bind_rows(
       "tar_option_set(envir = pipeline_env)")),
   v("pkg_rprofile",       "box::use(dplyr[mutate]) in the project .Rprofile (runs in every R process)", FN,
     files = list(".Rprofile" = "box::use(dplyr[mutate])")),
+  v("pkg_box_top_rargs",  "box::use top + same line run on every crew worker via crew_controller_local(r_arguments = c(..., '-e', setup))",
+    c("box::use(dplyr[mutate])", rargs('"box::use(dplyr[mutate])"'), FN)),
   # --- box modules (mods/tfuns.R, itself doing box::use(dplyr[mutate])) ---
   v("mod_alias_top_nopath", "box::use(mods/tfuns) at top, box.path NOT set", "box::use(mods/tfuns)", tg("tfuns$add_x(raw)"),
     mods, modes = c("none", "crew", "in-process")),
@@ -61,6 +67,9 @@ variants <- bind_rows(
     c("options(box.path = getwd())", "box::use(mods/tfuns)"), tg("tfuns$add_x(raw)"), mods, "mods/tfuns.R"),
   v("mod_attach_top",     "options(box.path = getwd()) + box::use(mods/tfuns[add_x]) at top (attach style)",
     c("options(box.path = getwd())", "box::use(mods/tfuns[add_x])"), tg(), mods, "mods/tfuns.R"),
+  v("mod_attach_top_rargs", "as mod_attach_top + box.path and the same box::use run on every crew worker via r_arguments '-e'",
+    c("options(box.path = getwd())", "box::use(mods/tfuns[add_x])",
+      rargs(r"{sprintf("options(box.path = %s); box::use(mods/tfuns[add_x])", deparse(getwd()))}")), tg(), mods, "mods/tfuns.R"),
   v("mod_in_fn",          "box::use(mods/tfuns) inside the function, box.path NOT set",
     in_fn("mods/tfuns", "tfuns$add_x(d)"), files = mods, edit = "mods/tfuns.R"),
   v("mod_in_fn_boxpath",  "options(box.path = getwd()) at top + box::use(mods/tfuns) inside the function",

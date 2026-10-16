@@ -29,6 +29,9 @@ test_that("local() / remote() are dbplyr special forms; .local does not exist", 
   expect_equal(col(mutate(lazy(), x = local(var1))), rep(100, 3))   # dbplyr: evaluate in R env
   expect_equal(col(mutate(df, x = local(var1))), c(1, 2, 3))        # base::local() on a tibble sees the column!
   expect_equal(col(mutate(lazy(), x = remote(var1) * 2)), c(2, 4, 6))
+  # sql() arguments run in R too: a name that is column AND object means the OBJECT on a DB, the column on a tibble
+  expect_equal(col(mutate(lazy(), x = sql(paste(var1, "* 2")))), rep(200, 3))
+  expect_equal(format(col(mutate(df, x = sql(paste(var1, "* 2"))))), paste("<SQL>", 1:3, "* 2"))
   expect_error(mutate(df, x = remote(var1)), "remote")
   expect_false(any(purrr::map_lgl(c("rlang", "dplyr", "dbplyr", "tidyselect"), \(p) exists(".local", asNamespace(p), inherits = FALSE))))
   expect_error(mutate(lazy(), x = .local$var1), ".local")
@@ -41,6 +44,12 @@ test_that("lst$f(col) on a DB: none of the wrappers fix it; code-returning helpe
   expect_error(mutate(lazy(), x = lst$f(.data$var1)), "outside of a data mask")
   for (d in list(df, lazy())) expect_equal(col(mutate(d, x = !!f_expr(var1))), c(2, 4, 6))
   expect_equal(lazy() |> collect() |> mutate(x = lst$f(var1)) |> col(), c(2, 4, 6))
+})
+
+test_that("sql() / .sql$ / unknown fns get no OVER () in a grouped mutate (tidyverse/dbplyr#1526)", {
+  lf <- lazy_frame(g = 1, x = 1, con = dialect_mssql()) |> group_by(g)
+  expect_match(sql_render(mutate(lf, y = sum(x, na.rm = TRUE))), "OVER \\(PARTITION BY")
+  for (q in list(mutate(lf, y = sql("STDEVP(x)")), mutate(lf, y = .sql$STDEVP(x)))) expect_no_match(sql_render(q), "OVER")
 })
 
 test_that("sql_glue2(): escaped identifiers and values, spliced with !!", {
@@ -67,6 +76,8 @@ test_that("check_ambiguity() warns on bare names that are both a column and an o
     expect_no_warning(check_ambiguity(d, across(c(var1), \(v) v * 2), .by = var1))   # tidyselect args skipped
   }
   expect_warning(check_ambiguity(lazy(), x = lst$f(var1)), "OBJECT")
+  expect_warning(check_ambiguity(lazy(), x = sql(paste(var1, "* 2"))), "OBJECT")   # sql() args run in R
+  expect_no_warning(check_ambiguity(lazy(), x = remote(var1)))                    # remote() = explicit column
   wrap <- \(d, v) check_ambiguity(d, x = {{ v }})   # defined outside expect_*(): testthat itself processes {{ }} / !!
   expect_warning(wrap(df, var1), class = "ambiguous_name")
   expect_error(check_ambiguity(df, x = var1, .error = TRUE), class = "ambiguous_name")

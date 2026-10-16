@@ -110,6 +110,10 @@ vis <- bind_rows(
   # harm check for the wildcard after the fix: top-level base[...] puts ~1400 COPIES of base objects on the search path
   run(P2, "patched top-level base[...]: where/how many copies", "base[...]",
       "c(pos = match('mod:base', search()), n = length(ls('mod:base', all.names = TRUE)))", "top-level", fix = TRUE),
+  # ...and, sitting at position 2, those copies re-mask packages attached earlier that override base (dplyr's intersect)
+  run(P2, "patched top-level base[...] after library(dplyr): intersect comes from", NA,
+      "{ suppressPackageStartupMessages(library(dplyr)); box::use(base[...]); environmentName(environment(intersect)) }",
+      "top-level", fix = TRUE),
   # .Last.value only updates at the REPL top level, so this one is a real Rscript file, not callr::r()
   local({
     f <- tempfile(fileext = ".R")

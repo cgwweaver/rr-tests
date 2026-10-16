@@ -1,145 +1,86 @@
-# dbplyr × box × NSE × callr/crew — what actually happens
+# dbplyr × box × NSE × callr × crew × targets: what actually happens
 
-Answers issue #1. Everything here is reproducible: each part is a script that writes a CSV to `results/`;
-`build-report.R` turns those into `results/tables.md` (full per-case tables, all three backends) and `results/versions.md`.
+Answers issues #1 and #3. Every claim comes from a script in this folder that you can re-run. Each script writes a CSV to `results/`, and `docs/` explains the results in plain language.
 
-| file | what |
-|---|---|
-| `01-nse.R` | column vs. global vs. function-local, `.data`/`.env`/`!!`/`{{ }}`, tidyselect, unknown fns — on **tibble, duckdb, sqlite** |
-| `02-box.R` + `mods/helpers.R` | box module scoping, aliasing, `ns$fn` vs `pkg::fn`, translation of box-imported fns |
-| `03-callr-crew.R` | fresh R sessions: globals, `library()`, `box::use()`, `box.path`, DB connections |
-| `tests/testthat/test-findings.R` | 16 fast regression guards for the findings below (run `testthat::test_dir("tests/testthat")` from this dir) |
-| `results/*.csv`, `results/tables.md` | raw captures: outcome, **where it failed** (`build`/`render`/`execute`), value, SQL, warnings, messages |
+- **Start here:** [CHEATSHEET.md](CHEATSHEET.md). Plain rules, safe to paste into an LLM.
+- **Upstream issues:** [plain-language explanations](docs/upstream-issues.md) · [ready-to-paste drafts](docs/upstream-drafts.md). Nothing was filed.
 
-Run: `Rscript 01-nse.R; Rscript 02-box.R; Rscript 03-callr-crew.R; Rscript build-report.R` (from this directory; ~1 min).
+## Words used in these docs
 
-## Versions used (all current on the CRAN mirror at test time, 2026-10-16)
+- **In-memory**: dplyr on a data frame (tibble) in R. The old README called this "tibble".
+- **Database**: a dbplyr lazy table from `tbl(con, ...)`. Tested on duckdb and SQLite, and for [SQL Server / Oracle](docs/05-sql-server-oracle.md) also on real engines. The old README called this "dbplyr".
+- **R variable**: an object in your session or in a function (not an OS environment variable like `R_BOX_PATH`).
+- **build / render / execute**: when a database query fails.
+  - *build* = when you call `mutate()` / `filter()`;
+  - *render* = when the SQL text is made (`show_query()`, `collect()`);
+  - *execute* = when the database runs it (`collect()`).
+- **translated**: dbplyr knows an SQL version of the function.
+- **`pkg::fn`** is R's own operator. **`mod$fn`** is a box module (or package object) plus `$`. dbplyr treats them very differently.
 
-R 4.6.1 · dplyr 1.2.1 · dbplyr 2.6.0 · DBI 1.3.0 · duckdb 1.5.6 · RSQLite 3.53.3 · box 1.2.3 · callr 3.8.0 · crew 1.3.3 · mirai 2.7.3 · tidyselect 1.2.1 · rlang 1.3.0.
-Full table with "newer available?": `results/versions.md`. Backends were duckdb + SQLite only — **no Oracle/MSSQL** (not available here), so translation/quoting conclusions are for those two dialects.
+## Answers to issue #3, one by one
 
----
-
-## 1. NSE: who wins, column or global?
-
-**Rule (identical on tibble and dbplyr): column > anything in the calling env.** Global is only used if no column has that name.
-
-| situation | result |
-|---|---|
-| `mutate(x = var1)`, `var1` is col **and** global | column (1,2,3) |
-| global only | global value, inlined as a literal (`SELECT *, 5.0 AS x`) |
-| neither | **build-time** error (dbplyr wording: `Object 'x' not found.`) |
-| `.env$var1` / `!!var1` | global (100) — the two safe ways to say "I mean the variable" |
-| `.data$var1` | column |
-| `.data$missing` | tibble: build error · **dbplyr: passes through to SQL → fails at `collect()`** with the DB's own binder error |
-| function arg named like a column (`\(d, var1) mutate(d, x = var1)`) | **column wins, arg ignored** — the classic footgun. Use `{{ }}`, `.env$`, or don't name args like columns |
-| function-local var, no column of that name | works |
-| `filter(var1 == var1)` | tautology (keeps everything), no warning |
-| string var as column name | `.data[[colname]]` or `!!sym(colname)`; bare `colname` is just the string |
-
-Extra dbplyr-vs-dplyr differences found (all silent unless noted):
-- **Global vector length > 1 as a value**: tibble recycles/errors on size; dbplyr inlines a SQL **tuple** `(10.0, 20.0, 30.0)` → duckdb returns a weird per-row struct/list column, **sqlite errors** (`row value misused`). Length 2 on 3 rows: tibble errors, duckdb "works". Use `%in%` for membership.
-- `filter(var1 == na_global)` → SQL `= NULL` → **0 rows, no warning** (same as R's `NA` logic, but easy to miss). Use `is.na()`.
-- `mutate(x = NULL_global)` is silently a no-op on both.
-- `Sys.Date()` in `filter()`: tibble fine; dbplyr passes it through as an SQL function → **fails on execute** (duckdb/sqlite). Compute outside: `!!Sys.Date()`.
-- `select(chr_global)` (external character vector, no `all_of`): tibble gives the tidyselect deprecation **warning**; on dbplyr **no warning at all** (still works). Always `all_of()`/`any_of()`.
-- `select(any_of("nope"))`: tibble returns 0-col tibble; dbplyr errors at **render** ("Query contains no columns").
-- SQLite has no date type: `copy_to` stores `Date` as a number, so date filters/printing/`year()` behave differently from duckdb (`year(dt)` = `-4659`!). Not a dbplyr bug, but don't test date logic on SQLite.
-
-### Unknown / untranslatable functions (dbplyr)
-
-- **Unknown function names are passed verbatim to SQL** (`foo(var1)` → `FOO(var1)`), so the error appears at **execute** with the DB's message, not at build. That's by design, and also why `Sys.Date()`, `myfun(col)`, `rev(col)` all fail only on `collect()`.
-- To call a real SQL function on purpose: `.sql$abs(var1)` (new in 2.6.0; errors on a plain tibble, as it should) or `sql("ABS(var1)")`. Both work on duckdb and sqlite.
-- Package-qualified calls `stringr::str_to_upper(col)` **are** translated (it strips the `pkg::`). Same for `lubridate::year`.
-- **dbplyr has no "strict" options in 2.6.0.** I searched the whole namespace for `getOption("dbplyr.*")`: none (guarded by a test). What exists instead: `last_sql()` / `show_query()` / `sql_render()` to inspect, `.sql$` / `sql()` as the explicit escape hatch, `sql_options()` (cte / star / qualify) which changes *rendering*, not strictness. If you want "error on unknown function", that's an upstream feature request (see §5).
-
-### ⚠️ Silent wrong result (most important finding)
-
-dbplyr's `partial_eval` evaluates any call whose **function is not a plain symbol** *locally* — `lst$f(col)`, `pkg$fn(col)`, `(\(z) z*2)(col)` — and resolves `col` from the **calling env, not the column**:
-
-```r
-var1 <- 100; lst <- list(f = \(x) x * 2); d <- memdb_frame(var1 = 1:3)
-d |> mutate(x = lst$f(var1)) |> show_query()
-#> SELECT *, 200.0 AS `x`        <- global var1 (100) * 2, not the column
-d |> mutate(x = lst$f(var1)) |> collect()   # x = 200, 200, 200   (tibble gives 2, 4, 6)
-rm(var1)                                     # now: "Caused by error: ! object 'var1' not found"
-```
-
-No warning or message. Hits box users directly because box encourages `helpers$double_it(col)` (see §2). Reproduced in `test-findings.R`.
-
-## 2. box
-
-| situation | result |
-|---|---|
-| module fn referencing a **global** (`only_global`) | not visible: `object not found` — module scope's parent is box's namespace/base, never `.GlobalEnv`. Good (reproducible), but means module fns can't rely on globals |
-| module-level object with same name as column (`var1 <- 999` in module, col `var1`) | column still wins (1,2,3) |
-| module-level object, no column | used (42) |
-| `.env$var1` inside module fn | the **module's** `var1` (999), not global's |
-| `dplyr$summarise(d, x = dplyr$n())` | tibble ✅, dbplyr ❌ "Must only be used inside data-masking" — `ns$fn` form isn't translated; use `box::use(dplyr[n])` + `n()` or `dplyr::n()` |
-| `lubridate$year(dt)` | tibble ✅, dbplyr ❌ build error (local eval, see §1). `lubridate::year(dt)` ✅ translated. |
-| module fn `helpers$double_it(col)` *inside the query* | tibble ✅ · **dbplyr: silent wrong value** (200,200,200 — the §1 bug) |
-| module fn `double_it(col)` called as a bare symbol inside a module query | tibble ✅ · dbplyr ❌ execute: `no such function: double_it` (passed to SQL) |
-| aliased import (`box::use(stringr[nch = str_length])`, `nch(name)`) | tibble ✅ · dbplyr ❌ execute: `no such function: nch`. **dbplyr translates by call name, not by function identity** — aliasing a translatable fn breaks translation. Aliasing *verbs* (`mutate_alias`) is fine (S3 dispatch on the object) |
-| `box::use(stringr[str_to_upper])` then `str_to_upper(col)` | ✅ everywhere (name-based) |
-| attaching style (`box::use(dplyr[mutate])`) inside a function | ✅ |
-| `box::use(base[nchar])` | ❌ **box 1.2.3 on R 4.6.1**: `no item called "getNamespaceInfo(mod_ns, "lazydata")" on the search list` (works for every other pkg I tried). Candidate upstream bug, §5 |
-
-Takeaway: box scoping is *stricter* than `library()` (nothing leaks from global), which is great for reproducibility, and dbplyr is *name-based*, so import names matter more than import mechanics. Keep SQL-translatable calls as bare names or `pkg::fn`; never wrap them in `mod$fn(col)`.
-
-## 3. callr / crew
-
-Both start **fresh R sessions**: nothing from your global env, no attached packages, no options.
-
-| case | callr | crew (mirai worker) |
+| you asked | short answer | details |
 |---|---|---|
-| `mutate()` w/o `library(dplyr)` | ❌ `could not find function "mutate"` | ❌ same; fix with `packages = "dplyr"` ✅ |
-| `dplyr::mutate()` | ✅ | ✅ |
-| fn/command referencing a global | ❌ `object not found` — even though the closure's env is `.GlobalEnv` (global is referenced, not serialised) | ❌ same; pass via `data = list(...)` ✅ |
-| var captured from a *local* function scope | ❌ `object 'loc' not found` (the function is shipped, its enclosing scope's variables are not) | n/a |
-| global helper fn | ❌ `could not find function` | n/a |
-| `box::use(dplyr[mutate])` inside the fn/command | ✅ (box needs no `library()`) | ✅ |
-| `box::use(mods/helpers)` (relative module) | ❌ `unable to load module "mods/helpers"; not found in ".../box/mod", "/tmp/Rtmp…"` — child doesn't have your `box.path` and relative lookup is anchored to a temp dir | ✅ (worker cwd = parent cwd; box finds it) |
-| …after `options(box.path = p)` in the child | ✅ | ✅ |
-| `getOption("box.path")` in child/worker | `NULL` — **options are not inherited** | `NULL` at first, but **persists** once any task set it → **state leaks between tasks** on a long-lived worker |
-| module function passed as an argument | ✅ works (module env serialises fine; imports come along) | ✅ |
-| a module function as the callr function itself | ✅ | n/a |
-| duckdb connection / lazy `tbl()` passed to child | ❌ `Invalid connection` (external pointer); `collect()` on a lazy tbl also fails with `no applicable method` because the child hasn't loaded dbplyr/duckdb | ❌ same class of error |
-| child opens its own connection | ✅ | ✅ (not run, same mechanism) |
-| cwd, `.libPaths()` | inherited ✅ | cwd inherited ✅ |
+| No `options(dbplyr = strict)`? Any dbplyr options? | **Yes, one:** `options(dplyr.strict_sql = TRUE)`. The name starts with `dplyr.`, which is why I missed it before. It makes unknown functions error when the SQL is made. It does not catch the silent `mod$fn(col)` bug, and it blocks `.sql$fn()` for functions dbplyr doesn't know. The other dbplyr options are cosmetic (colours, counters). | [06 §1–2](docs/06-escape-hatches.md#1-is-there-a-strict-option-yes-one-dplyrstrict_sql) |
+| Does `box::use(base)` make sense? Python? At least a clear error, or allow it with no harm? | It's redundant but legitimate. Python's `import builtins` / `from builtins import len` is legal too. It fails because of a **box bug since 1.1.3** (any R version; tested by installing 1.1.2 and 1.1.3). A one-line fix makes it work, and box's own tests still pass. My suggestion upstream: allow it. | [07](docs/07-box-base.md) |
+| If I'm not explicit and two things match, warn? | Nothing warns today: dplyr, dbplyr, rlang, lintr and codetools all stay silent. lintr even flags the *correct* code. People asked dplyr for this before (tidyverse/dplyr#2949, #6885, both closed). So I wrote an opt-in helper: `mutate_chk()` / `filter_chk()` / `check_ambiguity()` in `R/check_ambiguity.R`, with tests. | [06 §6–7](docs/06-escape-hatches.md#6-does-anything-warn-when-a-name-is-both-a-column-and-an-object) |
+| Did you try `sql()`, `.sql$`, `local()`? Does `.local` exist? | All tried, in-memory and database. **`.local` doesn't exist** anywhere. **`local(x)` means opposite things**: the column in-memory, the R variable on a database. `sql()` arguments run in R. `.sql$substr()` still gets R's translation. **None of them fixes the silent wrong result.** | [06 §3–5](docs/06-escape-hatches.md#3-escape-hatches-what-each-one-really-does) |
+| "On tibble and dbplyr" means dplyr in-memory vs dbplyr? | Yes. Renamed to **in-memory** vs **database** everywhere (see above). | – |
+| Explain each upstream issue simpler: why a problem, docs, what to expect, which package combo. | Rewritten: what happens / why it's a problem / what the docs say / what to expect / scope (e.g. "dbplyr only; box just makes it likely") / already reported? / verdict. **3 to file, 1 optional, 3 dropped** (two of my old ones were wrong). Plus 5 SQL Server/Oracle translation bugs and 2 targets/box notes. | [upstream-issues.md](docs/upstream-issues.md), [drafts](docs/upstream-drafts.md) |
+| Cheat sheet as plain .md, not a code block | Done. | [CHEATSHEET.md](CHEATSHEET.md) |
+| box at the top of the script worked with callr/targets, broke with crew. Put `box::use()` in every function? Use `tar_option_set(packages)`? | Reproduced. `box::use(pkg[fn])` at the top attaches names in the **main** process only. crew workers get your global objects, but not the search path. **Both your ideas work.** My first choice: keep functions in box modules, `box::use(mods/clean)` at the top (the module *object* is a global, so it is sent to workers), and call `clean$fn(data)`. 27 mini projects were tested, with and without crew. | [04](docs/04-targets.md) |
+| Add targets to the folder name | Renamed to `dbplyr-box-nse-callr-crew-targets`. | – |
+| Explain `qualify_all_columns` / `cte` | `sql_options()` changes only the SQL **text**, never the results: `cte = TRUE` gives one named block per step (readable), `use_star = FALSE` lists every column, `qualify_all_columns = TRUE` prefixes every column with its table in joins. Before/after SQL shown. | [05 `sql_options()`](docs/05-sql-server-oracle.md#sql_options-three-ways-to-write-the-same-query) |
+| Can you simulate MSSQL / Oracle to see the SQL? | Yes: `lazy_frame(..., con = dialect_mssql())` / `dialect_oracle()`. Better still, the SQL was also **run** on real SQL Server 2022, SQL Server 2025 and Oracle 26ai (Docker in the sandbox). About 1 in 8 queries rendered fine but failed when run. Big ones for SAS ports: Oracle dates, `as.integer()` rounds, `''` is NULL on Oracle, NULL sort order. | [05](docs/05-sql-server-oracle.md) |
+| Name your branch better | `claude/issue-3-targets-dialects-feedback`. | – |
 
-So: **box does work in callr/crew** — it's `library()`-free by design, which is *better* than the attach-dependent style. The only trap is **module path resolution** (`box.path` isn't inherited; relative lookup differs between callr and crew), plus the usual "fresh session" rules: pass data in, pass **connection details** (not connections), declare packages.
+## Corrections to the first version (PR #2)
 
-## 4. Mistake-avoidance cheat sheet (also: paste to your LLM)
+An adversarial re-check in fresh R processes found these. All are fixed in the docs.
 
+- **Strict mode exists** (`dplyr.strict_sql`). The old test only looked for `dbplyr.*` names. The test now checks the real option.
+- **The tidyselect warning on databases**: it does warn. The warning shows once per session, and the in-memory case had used it up. Dropped as an upstream issue.
+- **callr losing local variables**: the real reason is that callr resets the function's environment (`package = NULL`). With `package = TRUE` it works. This also explains why a module function that uses its imports fails as the callr function itself.
+- **box in callr vs crew**: the module search order is `R_BOX_PATH` (which replaces `box.path` when set), then box's folder, then the "script folder". callr's child has a temp script, so lookup fails. crew workers have none, so `getwd()` is used. Fix: `Sys.setenv(R_BOX_PATH = ...)`.
+- **What reaches a child process**: options don't, but environment variables, the project `.Rprofile`, `.libPaths()` and the working directory do.
+- **crew state**: attached packages leak between tasks too, not just options (`reset_packages = FALSE`).
+- **Unknown functions** are passed with their case unchanged. An untranslatable `pkg::fn()` errors early instead of being sent.
+- **The silent-wrong-result rule** now lists its exceptions: `pkg::`, `.sql$`, `.data$`/`.env$`.
+- **Box modules** see base only: not globals, not `stats`/`utils`.
+- **`box::use(base)`** is a box regression since 1.1.3, not specific to R 4.6.
+- Smaller fixes: the exact error wording, `filter(var1 == var1)` drops NA rows, SQLite date luck, the test counts, and a box test that used a local variable instead of a global.
+
+## Files
+
+| file | what | runtime |
+|---|---|---|
+| `01-nse.R` → [docs/01-nse.md](docs/01-nse.md) | column vs R variable, `.data`/`.env`/`!!`/`{{ }}`, tidyselect, unknown functions, the silent wrong result | ~10 s |
+| `02-box.R` + `mods/helpers.R` → [docs/02-box.md](docs/02-box.md) | box module scope, aliasing, `ns$fn` vs `pkg::fn`, translation of box imports | ~5 s |
+| `03-callr-crew.R` → [docs/03-callr-crew.md](docs/03-callr-crew.md) | what reaches a callr child / crew worker: globals, packages, options, env vars, modules, connections | ~1 min |
+| `04-targets.R` + `targets/<variant>/` → [docs/04-targets.md](docs/04-targets.md) | 27 mini targets projects × {no controller, crew}: box at top / in function / module object / `packages =` / `.Rprofile` / `r_arguments` … | ~5 min |
+| `05-dialects.R` → [docs/05-sql-server-oracle.md](docs/05-sql-server-oracle.md) | 87 snippets rendered for SQL Server 15/17, Oracle, Postgres, duckdb, SQLite, and run on real engines when the Docker containers are up; `sql_options()` | ~2 min |
+| `06-escape-hatches.R` + `R/check_ambiguity.R` → [docs/06-escape-hatches.md](docs/06-escape-hatches.md) | every option dbplyr reads, `sql()`/`.sql$`/`local()`/`remote()`/`sql_glue2()`, how dbplyr decides "R or SQL", the ambiguity helper | ~15 s |
+| `07-box-base.R` → [docs/07-box-base.md](docs/07-box-base.md) | `box::use(base)` root cause, 123 fresh-process cases, tested fix | ~1 min |
+| `R/harness.R` | `probe()`: captures value / SQL / warnings / messages / error and the stage it failed at | – |
+| `build-report.R` → `results/tables.md`, `results/versions.md` | all per-case tables for parts 1–3, 6, 7 + versions | ~5 s |
+| `tests/testthat/` | 21 tests, 72 expectations (+ 7 more with `RUN_TARGETS_TESTS=true`, which runs real pipelines, ~1 min) | ~10 s |
+
+Run everything from this folder:
+
+```sh
+for f in 0*.R; do Rscript "$f"; done; Rscript build-report.R
+Rscript -e 'testthat::test_dir("tests/testthat")'
 ```
-R / tidyverse / dbplyr / box / callr rules (verified on dplyr 1.2.1, dbplyr 2.6.0, box 1.2.3, callr 3.8.0, crew 1.3.3):
-1. In dplyr/dbplyr verbs a COLUMN always beats a same-named variable. Never name a function argument like a column.
-   Use .env$x or !!x for variables, .data$col or .data[[chr]] for columns, {{ arg }} for forwarded column args.
-2. dbplyr passes unknown function names straight to SQL; the error appears at collect(), not at the verb. Use
-   show_query() / last_sql() while developing. Escape hatch for real SQL functions: .sql$fn(col) or sql("...").
-3. dbplyr translates by call NAME. pkg::fn(col) is OK; bare imported fn(col) is OK; ALIASED imports (nch = str_length)
-   and mod$fn(col) / ns$fn(col) are NOT translated. mod$fn(col) / lst$f(col) / (\(x) ..)(col) are evaluated LOCALLY and
-   can silently use a same-named GLOBAL instead of the column. Compute locals outside the query and splice with !!.
-4. Do not use Sys.Date(), R-only fns, or globals of length > 1 inside dbplyr queries; use !!Sys.Date(), is.na(), %in%.
-   Always all_of()/any_of() for character vectors of column names.
-5. box modules never see .GlobalEnv. Pass everything as arguments. Don't aliases-import translatable functions.
-6. callr / crew workers are fresh R sessions: no globals, no packages attached, no options (box.path!), DB connections
-   cannot be sent. Pass data via args / data=, declare packages= (or use pkg:: / box::use inside), set options(box.path)
-   inside the task, open DB connections inside the task. crew workers are long-lived: options set in one task leak to the next.
-7. SQLite is a poor stand-in for testing date logic (no date type). Test on duckdb or the real dialect.
-```
 
-## 5. Candidates for upstream issues/PRs (drafted, **not filed** — your call)
+`05-dialects.R` runs queries on real SQL Server / Oracle only if the Docker containers named at the top of the script are running. Without them it still renders all the SQL and runs it on duckdb and SQLite.
 
-1. **dbplyr — silent wrong result for non-symbol call heads** (§1 reprex above). Ask: either evaluate such calls with the data mask (so `col` resolves to the column) or warn/error when a locally-evaluated call references a column name that also exists in the env. This is the highest-value one. *(Check existing issues first — I could only reach this repo, so I haven't searched dbplyr's tracker.)*
-2. **dbplyr — optional strictness**: an option/arg to error at build time on untranslatable functions (the issue's "strict" idea doesn't exist today); and a warning when `partial_eval` inlines a global vector of length > 1 as a tuple.
-3. **box — `box::use(base[...])` fails on R 4.6.1** with `getNamespaceInfo(mod_ns, "lazydata")` error. Minimal reprex: `Rscript -e 'box::use(base[nchar])'`.
-4. **dbplyr docs/message**: unknown-function passthrough is documented, but the `collect()` error doesn't hint "this function wasn't translated; use `.sql$`" — possible message improvement (error currently shows only the DB's catalog error).
-5. **tidyselect** (minor): external-vector-in-`select()` deprecation warning is not emitted for lazy tables.
+## Versions
 
-## Caveats / what I did not test
+R 4.6.1 · dplyr 1.2.1 · dbplyr 2.6.0 · DBI 1.3.0 · duckdb 1.5.6 · RSQLite 3.53.3 · box 1.2.3 · callr 3.8.0 · crew 1.3.3 · mirai 2.7.3 · targets 1.12.0 · tarchetypes 0.14.1 · tidyselect 1.2.1 · rlang 1.3.0 · withr 3.0.3 · lintr 3.4.0. All were the latest on CRAN on 2026-10-16 ([results/versions.md](results/versions.md)). Key results were also re-checked against the GitHub dev versions of dbplyr (2.6.0.9000) and box: same behaviour. SQL engines: SQL Server 2022 (16.x), SQL Server 2025 (17.x), Oracle Free 26ai (23.26).
 
-- Only duckdb and SQLite; the Oracle/MSSQL dialects have different translations (and quoting) — worth re-running part 1 against your Oracle/MSSQL with the same scripts (swap `setup_backends()`).
-- `dbplyr` options like `qualify_all_columns`/`cte` change SQL, not NSE; not permuted.
-- crew was tested with one local worker; `targets`/`future`/`mirai::daemons()` not covered (same fresh-session rules expected, not verified).
-- The crew "no `box.path` works" result relies on worker cwd; I did not trace box internals to confirm the exact mechanism.
+## Not covered
+
+- Oracle **19c** (no SQL boolean): those notes come from the docs and were not run.
+- Real odbc / ROracle / JDBC connections. The dialect a connection picks was read from dbplyr's source, and how to check yours is explained in [05](docs/05-sql-server-oracle.md#how-a-real-connection-picks-its-dialect).
+- crew on a cluster (crew.cluster / SLURM). Only local workers on Linux were tested.
+- `future` / `mirai::daemons()` directly. The same fresh-process rules are expected, but not tested.

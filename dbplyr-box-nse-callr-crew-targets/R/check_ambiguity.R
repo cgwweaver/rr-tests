@@ -10,8 +10,8 @@ binds_value <- \(env, nm) rlang::env_has(env, nm, inherit = TRUE) && !is.functio
 drop_names <- \(df, nms) if (NROW(df)) df[!df$name %in% nms, , drop = FALSE]
 
 # walk one expression; returns a data frame (name, local) of ambiguous symbols.
-# local = TRUE: the symbol sits inside local() or a call whose head is not a plain name (lst$f(), (\(x) x)(), ...),
-# which dbplyr evaluates in R -> there the OBJECT is used, not the column.
+# local = TRUE: the symbol sits inside local(), sql() or a call whose head is not a plain name (lst$f(), (\(x) x)(), ...),
+# which dbplyr evaluates in R (tidyeval.R:225-236, 257-262) -> there the OBJECT is used, not the column.
 ambiguous_syms <- function(x, env, cols, local = FALSE) {
   rec <- \(y, e = env, l = local) ambiguous_syms(y, e, cols, l)
   if (rlang::is_quosure(x)) return(rec(rlang::quo_get_expr(x), rlang::quo_get_env(x)))   # {{ }} keeps its own env
@@ -19,14 +19,14 @@ ambiguous_syms <- function(x, env, cols, local = FALSE) {
     nm <- rlang::as_string(x)
     return(if (nm %in% cols && binds_value(env, nm)) data.frame(name = nm, local = local))
   }
-  if (!rlang::is_call(x) || rlang::is_call(x, c("::", ":::", "pick", "c_across")) || is_pronoun(x)) return(NULL)
+  if (!rlang::is_call(x) || rlang::is_call(x, c("::", ":::", "pick", "c_across", "remote")) || is_pronoun(x)) return(NULL)
   if (rlang::is_call(x, c("$", "@"))) return(rec(x[[2]]))                       # `lst$a`: `a` is a field name
   if (rlang::is_call(x, "function")) return(drop_names(rec(x[[3]]), names(x[[2]])))     # lambda formals
   if (rlang::is_call(x, c("across", "if_any", "if_all"))) { x <- rlang::call_match(x, dplyr::across); x$.cols <- NULL }
   head <- x[[1]]
   plain <- rlang::is_symbol(head) || rlang::is_call(head, "::") || is_pronoun(head, ".sql")
   parts <- if (plain) as.list(x)[-1] else as.list(x)
-  purrr::map(parts, rec, l = local || !plain || rlang::is_call(x, "local")) |> purrr::list_rbind()
+  purrr::map(parts, rec, l = local || !plain || rlang::is_call(x, c("local", "sql"))) |> purrr::list_rbind()
 }
 
 check_ambiguity <- function(.data, ..., .error = FALSE) {
@@ -40,7 +40,7 @@ check_ambiguity <- function(.data, ..., .error = FALSE) {
   msg <- c("{.var {nms}} {?is/are} both a column and an object in the calling environment.",
            i = "The column wins in dplyr. Say which one you mean: {.code .data${nms[1]}} (column) or {.code .env${nms[1]}} (object).")
   if (inherits(.data, "tbl_lazy") && length(loc))
-    msg <- c(msg, "!" = "dbplyr runs {.code lst$f(...)}-style calls and {.code local()} in R, so here {.var {loc}} is the OBJECT, not the column (silent wrong result).")
+    msg <- c(msg, "!" = "dbplyr runs {.code lst$f(...)}-style calls, {.code local()} and {.code sql()} arguments in R, so here {.var {loc}} is the OBJECT, not the column (silent wrong result).")
   (if (.error) cli::cli_abort else cli::cli_warn)(msg, class = "ambiguous_name", call = NULL)
   invisible(.data)
 }

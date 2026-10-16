@@ -23,6 +23,11 @@ inv <- c("dbplyr", "dplyr", "tidyselect", "rlang", "lifecycle", "DBI", "duckdb",
 print(as.data.frame(filter(inv, package %in% c("dbplyr", "dplyr", "lifecycle"))))
 res_inv <- inv |> transmute(part = "options", case = option, backend = package, code = purrr::map_chr(read_in, clip, 200),
                             outcome = "ok", failed_at = NA, value = kind, sql = NA, warnings = "", messages = "")
+# dplyr.legacy_locale is itself deprecated in dplyr 1.2.0 (locale.R:89): fresh process, so the once-per-session warning shows
+res_inv <- bind_rows(res_inv, probe("options", "dplyr.legacy_locale = TRUE (fresh process)", callr::r(\() {
+  options(dplyr.legacy_locale = TRUE)
+  tryCatch({ dplyr::arrange(data.frame(x = c("b", "A")), x); "no warning" }, warning = \(w) conditionMessage(w))
+})))
 
 # globals: var1 is ALSO a column (1,2,3); helpers for the "local function" cases
 var1 <- 100; only_global <- 5; colname <- "var1"; k <- 2; bad <- "alpha' OR '1'='1"
@@ -60,6 +65,8 @@ res_escape <- bind_rows(
   probe_bk(P, "sql(paste(colname, '* 2')) (args run in R)", mutate(d, x = sql(paste(colname, "* 2")))),
   probe_bk(P, ".sql$instr(name, 'a') (not translated)", mutate(d, x = .sql$instr(name, "a"))),
   probe_bk(P, "unknown fn instr() w/o .sql$",          mutate(d, x = instr(name, "a"))),
+  probe_bk(P, "sql(paste(var1, '* 2')) var1 = col AND object", mutate(d, x = sql(paste(var1, "* 2")))),
+  probe(P, "grouped sql()/.sql$: no OVER (dbplyr#1526)", sql_render(mutate(group_by(lf_ms, x), z = sql("STDEVP(y)"), w = .sql$STDEVP(y)))),
   probe_bk(P, "local(var1) -> R env",                  mutate(d, x = local(var1))),
   probe_bk(P, "local(only_global * 2)",                mutate(d, x = local(only_global * 2))),
   probe_bk(P, "remote(var1) * 2 -> column",            mutate(d, x = remote(var1) * 2)),
@@ -123,6 +130,8 @@ res_amb <- bind_rows(
   probe_bk(P, "check_ambiguity: .data$/.env$/!! are quiet", check_ambiguity(d, x = .data$var1, y = .env$var1, z = !!var1)),
   probe_bk(P, "mutate_chk(d, x = lst$f(var1))",        mutate_chk(d, x = lst$f(var1))),
   probe_bk(P, "mutate_chk(d, x = .data$var1 * 2)",     mutate_chk(d, x = .data$var1 * 2)),
+  probe_bk(P, "mutate_chk(d, x = sql(paste(var1, '* 2')))", mutate_chk(d, x = sql(paste(var1, "* 2")))),
+  probe_bk(P, "check_ambiguity: remote(var1) is quiet", check_ambiguity(d, x = remote(var1))),
   probe_bk(P, "fn arg named like col: check_ambiguity", (\(d, var1) filter_chk(d, var1 > 1))(d, 2)),
   probe_bk(P, "{{ }} wrapper: user passes bare var1", (\(d, col) mutate_chk(d, x = {{ col }}))(d, var1)),
   probe_bk(P, "false positive: !!sym('var1')",         check_ambiguity(d, x = !!rlang::sym("var1")))

@@ -28,11 +28,12 @@ test_that("dbplyr: non-symbol call head (lst$f(col)) is evaluated LOCALLY -> sil
   expect_equal(col(mutate(lazy(), x = lst$f(var1))), rep(200, 3))   # dbplyr: global var1 used, not the column
 })
 
-test_that("dbplyr: no 'strict' options exist in this version", {
-  src <- unlist(lapply(ls(asNamespace("dbplyr"), all.names = TRUE), \(f) {
-    x <- get(f, asNamespace("dbplyr")); if (is.function(x)) deparse(x)
-  }))
-  expect_false(any(grepl("getOption\\(\"dbplyr\\.", src)))
+test_that("dbplyr: the one strict switch is options(dplyr.strict_sql = TRUE) (note: dplyr., not dbplyr.)", {
+  var1 <- 100; lst <- list(f = \(x) x * 2)
+  withr::local_options(dplyr.strict_sql = TRUE)
+  d <- mutate(lazy(), x = foo(var1))                                  # the verb itself still succeeds...
+  expect_error(sql_render(d), "translate")                            # ...the error comes when SQL is made
+  expect_equal(col(mutate(lazy(), x = lst$f(var1))), rep(200, 3))     # and it does NOT catch the silent bug
 })
 
 test_that("callr child is a clean session: no globals, no attached packages", {
@@ -51,7 +52,7 @@ test_that("box: module functions do not see the caller's globals", {
   skip_if_not_installed("box")
   res <- callr::r(\(wd) {
     options(box.path = wd); box::use(mods/helpers)
-    only_global <- 5
+    assign("only_global", 5, envir = globalenv())   # a real global, not a local
     try(helpers$add_global_only(data.frame(var1 = 1)), silent = TRUE) |> class()
   }, args = list(normalizePath(file.path(testthat::test_path(), "../..")))
   )
