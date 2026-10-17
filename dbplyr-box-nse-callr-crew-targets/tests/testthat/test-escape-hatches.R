@@ -88,6 +88,8 @@ test_that("check_ambiguity(): scope rules and known false positives", {
   name <- function() "fn"; expect_no_warning(check_ambiguity(df, x = name))   # functions ignored
   y <- 5; expect_warning(check_ambiguity(df, y = 1, z = y), "`y`")    # earlier new column counts
   expect_warning(check_ambiguity(tibble::tibble(pi = 1, r = 2), a = pi * r^2), "`pi`")   # base constant: real trap
+  lazy_arg <- \(d, var1 = stop("boom")) check_ambiguity(d, x = var1)   # a failing default arg must not crash the check
+  expect_warning(lazy_arg(df), class = "ambiguous_name")
   var1 <- 100
   expect_warning(check_ambiguity(df, x = !!rlang::sym("var1")), class = "ambiguous_name")  # false positive
 })
@@ -98,4 +100,10 @@ test_that("checked verbs give the same result as dplyr verbs", {
   expect_equal(suppressWarnings(collect(mutate_chk(d, x = var1 * 2))), collect(mutate(d, x = var1 * 2)))
   expect_equal(collect(filter_chk(d, .data$var1 > 1)), collect(filter(d, var1 > 1)))
   expect_equal(collect(summarise_chk(d, m = sum(.data$var1, na.rm = TRUE))), collect(summarise(d, m = sum(var1, na.rm = TRUE))))
+})
+
+test_that("checked verbs take .error themselves (not passed on as a new column)", {
+  var1 <- 100
+  expect_named(mutate_chk(df, y = 1, .error = TRUE), c(names(df), "y"))
+  expect_error(mutate_chk(df, x = var1, .error = TRUE), class = "ambiguous_name")
 })

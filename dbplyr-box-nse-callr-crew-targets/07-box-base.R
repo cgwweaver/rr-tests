@@ -120,7 +120,7 @@ vis <- bind_rows(
     writeLines(c(paste("fix <-", paste(deparse(patched), collapse = "\n")), "environment(fix) <- asNamespace('box')",
                  "utils::assignInNamespace('mod_export_names.box$pkg_info', fix, 'box')", "box::use(base[...])", "40 + 2",
                  "cat(sprintf('.Last.value=%s base::.Last.value=%s found_in=%s', deparse(.Last.value), base::.Last.value, toString(find('.Last.value'))))"), f)
-    out <- system2(file.path(R.home("bin"), "Rscript"), f, stdout = TRUE, stderr = TRUE) |> squish()
+    out <- system2(file.path(R.home("bin"), "Rscript"), shQuote(f), stdout = TRUE, stderr = TRUE) |> squish()
     tibble(part = P2, case = "patched top-level base[...]: the .Last.value copy is frozen", backend = "Rscript+patch",
            code = "box::use(base[...]); 40 + 2; .Last.value", outcome = "ok", failed_at = NA_character_,
            value = out, sql = NA_character_, warnings = "", messages = "")

@@ -3,7 +3,7 @@
 # NB: testthat sets TESTTHAT=true, which makes box resolve modules from getwd() -> we unset it in children,
 # otherwise module lookups that fail in real use would pass here.
 proj <- normalizePath(test_path("../.."))
-no_tt <- c(callr::rcmd_safe_env(), TESTTHAT = "false")
+no_tt <- c(callr::rcmd_safe_env(), TESTTHAT = "false", R_BOX_PATH = "")   # as 04-targets.R: ignore the user's R_BOX_PATH
 
 test_that("box::use(pkg[fn]) at top level attaches 'mod:pkg' on the search path, not in .GlobalEnv or .packages()", {
   r <- callr::r(\() {
@@ -27,10 +27,10 @@ test_that("in a callr child (how tar_make() runs _targets.R) box resolves module
 run_variant <- function(variant, crew) {
   dir <- file.path(proj, "targets", variant); store <- file.path(dir, "_targets")
   unlink(store, recursive = TRUE); on.exit(unlink(store, recursive = TRUE))
-  processx::run(file.path(R.home("bin"), "Rscript"), c("-e", "targets::tar_make(reporter = 'silent')"), wd = dir,
-                error_on_status = FALSE, env = c("current", USE_CREW = tolower(crew), TESTTHAT = "false"))
-  m <- targets::tar_meta(out, fields = error, store = store)
-  if (nrow(m) && !is.na(m$error)) m$error else "ok"
+  r <- processx::run(file.path(R.home("bin"), "Rscript"), c("-e", "targets::tar_make(reporter = 'silent')"), wd = dir,
+                     error_on_status = FALSE, env = c("current", USE_CREW = tolower(crew), TESTTHAT = "false", R_BOX_PATH = ""))
+  m <- targets::tar_meta(fields = error, store = store) |> dplyr::filter(name == "out")
+  if (!nrow(m)) paste("`out` never ran:", r$stderr) else if (is.na(m$error)) "ok" else m$error
 }
 
 test_that("crew: box::use() at top of _targets.R does not reach workers; inside the function it does", {

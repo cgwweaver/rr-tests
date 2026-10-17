@@ -2,11 +2,13 @@
 # a column and a (non-function) object visible from where the code was written.
 # Neither dplyr, dbplyr, rlang nor lintr does this (see 06-escape-hatches.R / README).
 #   check_ambiguity(d, x = var1)          # warns, returns d invisibly
-#   d |> mutate_chk(x = var1)             # check, then dplyr::mutate()
+#   d |> mutate_chk(x = var1)             # check, then dplyr::mutate(); .error = TRUE errors instead
 # Fix the warning by saying what you mean: .data$var1 (column) or .env$var1 / !!var1 (object).
 
 is_pronoun <- \(x, nms = c(".data", ".env")) rlang::is_call(x, c("$", "[["), n = 2) && rlang::is_symbol(x[[2]], nms)
-binds_value <- \(env, nm) rlang::env_has(env, nm, inherit = TRUE) && !is.function(rlang::env_get(env, nm, inherit = TRUE))
+# env_get() forces a lazy fn argument (dplyr never would): if that errors, count it as a value, don't crash
+binds_value <- \(env, nm) rlang::env_has(env, nm, inherit = TRUE) &&
+  tryCatch(!is.function(rlang::env_get(env, nm, inherit = TRUE)), error = \(e) TRUE)
 drop_names <- \(df, nms) if (NROW(df)) df[!df$name %in% nms, , drop = FALSE]
 
 # walk one expression; returns a data frame (name, local) of ambiguous symbols.
@@ -46,7 +48,7 @@ check_ambiguity <- function(.data, ..., .error = FALSE) {
 }
 
 # checked verbs: same arguments as the dplyr verb
-checked <- \(verb) \(.data, ...) { check_ambiguity(.data, ...); verb(.data, ...) }
+checked <- \(verb) \(.data, ..., .error = FALSE) { check_ambiguity(.data, ..., .error = .error); verb(.data, ...) }
 mutate_chk <- checked(dplyr::mutate)
 filter_chk <- checked(dplyr::filter)
 summarise_chk <- checked(dplyr::summarise)

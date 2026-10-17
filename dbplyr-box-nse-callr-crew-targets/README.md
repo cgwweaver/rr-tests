@@ -63,7 +63,7 @@ An adversarial re-check in fresh R processes found these. All are fixed in the d
 | `07-box-base.R` → [docs/07-box-base.md](docs/07-box-base.md) | `box::use(base)` root cause, 123 cases (118 in a fresh R process), tested fix | ~1 min |
 | `R/harness.R` | `probe()`: captures value / SQL / warnings / messages / error and the stage it failed at | – |
 | `build-report.R` → `results/tables.md`, `results/versions.md` | all per-case tables for parts 1–3, 6, 7 + versions | ~3 s |
-| `tests/testthat/` | 21 tests: 70 expectations pass, 2 tests skip. With `RUN_TARGETS_TESTS=true` (runs real pipelines, ~1 min): 79 expectations, no skips | ~10 s |
+| `tests/testthat/` | 22 tests: 73 expectations pass, 2 tests skip. With `RUN_TARGETS_TESTS=true` (runs real pipelines, ~1 min): 82 expectations, no skips | ~10 s |
 
 Run everything from this folder:
 

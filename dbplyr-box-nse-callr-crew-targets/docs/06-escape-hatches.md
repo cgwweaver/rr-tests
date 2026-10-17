@@ -1,6 +1,6 @@
 # dbplyr options, escape hatches, and "warn me when a name is ambiguous"
 
-Files: `06-escape-hatches.R` writes `results/06-escape-hatches.csv` (241 rows, about 16 s). The helper is in `R/check_ambiguity.R`. Tests are in `tests/testthat/test-escape-hatches.R` (10 tests, 47 checks, about 5 s).
+Files: `06-escape-hatches.R` writes `results/06-escape-hatches.csv` (241 rows, about 16 s). The helper is in `R/check_ambiguity.R`. Tests are in `tests/testthat/test-escape-hatches.R` (11 tests, 50 checks, about 5 s).
 Run it with `Rscript 06-escape-hatches.R`, then `testthat::test_file("tests/testthat/test-escape-hatches.R")`.
 
 ## 1. Is there a strict option? Yes, one: `dplyr.strict_sql`
