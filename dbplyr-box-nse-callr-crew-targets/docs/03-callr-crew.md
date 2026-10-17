@@ -13,9 +13,9 @@ Both callr and crew start a **new R process**.
 | options you set this session (`options(box.path = ...)`) | ❌ | ❌ |
 | OS environment variables (`Sys.setenv(R_BOX_PATH = ...)`) | ✅ | ✅ |
 | project `.Rprofile` in the working folder | ✅ (callr default `user_profile = "project"`) | ✅ (started without `--vanilla`). Both tested through targets in [04-targets.md](04-targets.md), variant `pkg_rprofile` |
-| `.libPaths()`, `repos` | ✅ (callr passes them on purpose) | ⚠️ only the library paths R sets at startup. A `.libPaths()` call made in your session does **not** reach workers (checked by hand, not in the CSV) |
+| `.libPaths()`, `repos` | ✅ (callr passes them on purpose) | ⚠️ only the library paths R sets at startup. A `.libPaths()` call made in your session does **not** reach workers |
 | working directory | ✅ same as parent | ✅ same as parent when the worker started |
-| a DB connection or lazy `tbl()` | ❌ `Invalid connection` (it's a pointer into the parent's memory). A lazy `tbl()` first fails with `no applicable method for 'collect'` unless dbplyr is loaded in the child | ❌ same (the connection case was checked by hand, not in the CSV) |
+| a DB connection or lazy `tbl()` | ❌ `Invalid connection` (it's a pointer into the parent's memory). A lazy `tbl()` first fails with `no applicable method for 'collect'` unless dbplyr is loaded in the child | ❌ same |
 
 ## Results
 
@@ -66,7 +66,7 @@ crew reuses workers. Its defaults are `reset_globals = TRUE`, `reset_packages = 
 - globals are cleared after each task;
 - **packages attached in one task stay attached** for later tasks on the same worker. A `library()` in one target can make a later target work by accident;
 - **options set in one task stay set**.
-- `crew_controller_local(reset_packages = TRUE, reset_options = TRUE)` detaches packages and restores options that existed before the task. A brand-new option such as `box.path` still leaks. This is stated in `?crew_controller_local`, and I checked it by hand (not in the CSV).
+- `crew_controller_local(reset_packages = TRUE, reset_options = TRUE)` detaches packages and restores options that existed before the task. A brand-new option such as `box.path` still leaks. This is stated in `?crew_controller_local`, and `03-callr-crew.R` checks it: the next task saw `box.path = "X"`, `digits` back to 7, and dplyr detached.
 
 ---
 [← back to README](../README.md) · [cheat sheet](../CHEATSHEET.md)

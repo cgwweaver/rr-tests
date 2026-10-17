@@ -23,7 +23,7 @@ So a module **never** sees your global variables or the search path. Even `media
 | module-level object, no such column | module's value (42) | module's value |
 | `.env$var1` inside a module function | the **module's** `var1` (999), not your global | same |
 | `dplyr$summarise(d, x = dplyr$n())` | works | ❌ "Must only be used inside data-masking verbs". The `ns$fn` form is not translated. Use `box::use(dplyr[n])` + `n()`, or `dplyr::n()` |
-| `lubridate$year(dt)` | works | ❌ build error. dbplyr runs `lubridate$year(dt)` in R, where `dt` is `stats::dt` (a function). If an R variable has the column's name, it is **silently** used instead (a global `dt <- as.Date("1999-05-05")` gives 1999 on every row; checked by hand, not in the CSV). `lubridate::year(dt)` is translated ✅ |
+| `lubridate$year(dt)` | works | ❌ build error. dbplyr runs `lubridate$year(dt)` in R, where `dt` is `stats::dt` (a function). If an R variable has the column's name, it is **silently** used instead (an R variable `dt <- as.Date("1999-05-05")` gives 1999 on every row, in-memory gives 2024). `lubridate::year(dt)` is translated ✅ |
 | `helpers$double_it(col)` **inside** a dbplyr verb | works (2, 4, 6) | **silent wrong value** (200, 200, 200): the [silent-wrong-result](01-nse.md#silent-wrong-result) case |
 | bare `double_it(col)` inside a module's dbplyr query | works | ❌ at `collect()`: `no such function: double_it` (sent to SQL) |
 | aliased import `box::use(stringr[nch = str_length])`, then `nch(name)` | works | ❌ at `collect()`: `no such function: nch` |

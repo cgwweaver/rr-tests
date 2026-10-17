@@ -35,6 +35,7 @@ res_callr <- bind_rows(
   probe(P, "module fn USING a dplyr import as callr func directly", r1(helpers$add_var1, args = list(df))),
   probe(P, "...same with package = TRUE",          r1(helpers$add_var1, args = list(df), package = TRUE)),
   probe(P, "lazy duckdb tbl passed as arg",        r1(\(d) dplyr::collect(d), args = list(lazy))),
+  probe(P, "lazy tbl passed as arg, dbplyr loaded in child", r1(\(d) { library(dbplyr); dplyr::collect(d) }, args = list(lazy))),
   probe(P, "con passed as arg",                    r1(\(con) DBI::dbGetQuery(con, "select 1"), args = list(con))),
   probe(P, "child opens own duckdb con",           r1(\() { con <- DBI::dbConnect(duckdb::duckdb(shared_home = FALSE)); on.exit(DBI::dbDisconnect(con)); DBI::dbGetQuery(con, "select 1 as x") })),
   probe(P, "child cwd == parent cwd",              r1(\(h) identical(normalizePath(getwd()), normalizePath(h)), args = list(here))),
@@ -71,11 +72,30 @@ res_crew <- bind_rows(
         crew_run({ options(box.path = p); box::use(mods/helpers); helpers$double_it(2) }, data = list(p = here))),
   probe(P, "module fn passed via data",             crew_run(f(2), data = list(f = helpers$double_it))),
   probe(P, "lazy duckdb tbl passed via data",       crew_run(dplyr::collect(d), data = list(d = lazy))),
+  probe(P, "con passed via data",                   crew_run(DBI::dbGetQuery(con, "select 1"), data = list(con = con))),
   probe(P, "worker opens own duckdb con",           crew_run({ con <- DBI::dbConnect(duckdb::duckdb(shared_home = FALSE)); on.exit(DBI::dbDisconnect(con)); DBI::dbGetQuery(con, "select 1 as x") })),
   probe(P, "worker cwd == parent cwd",              crew_run(identical(normalizePath(getwd()), normalizePath(h)), data = list(h = here))),
   probe(P, "worker getOption('box.path') AFTER an earlier task set it (state leak)",          crew_run(getOption("box.path")))
 )
 ctl$terminate()
-res <- bind_rows(res_callr, res_crew)
+
+# workers keep the library paths and settings they started with, so these need fresh controllers
+fresh_ctl <- \(...) { ctl <<- crew_controller_local(workers = 1, seconds_idle = 30, ...); ctl$start() }
+extra_lib <- normalizePath(tempdir())
+.libPaths(c(extra_lib, .libPaths()))
+fresh_ctl()
+res_fresh <- bind_rows(
+  probe("callr", "runtime .libPaths() change reaches child", r1(\(p) p %in% normalizePath(.libPaths()), args = list(extra_lib))),
+  probe(P, "runtime .libPaths() change reaches worker",   crew_run(p %in% normalizePath(.libPaths()), data = list(p = extra_lib)))
+)
+ctl$terminate()
+fresh_ctl(reset_packages = TRUE, reset_options = TRUE)
+invisible(crew_run({ options(box.path = "X", digits = 3); library(dplyr); TRUE }))
+res_fresh <- bind_rows(res_fresh,
+  probe(P, "reset_packages/options = TRUE: next task sees box.path / digits / dplyr attached?",
+        crew_run(c(box.path = getOption("box.path"), digits = getOption("digits"), dplyr = "package:dplyr" %in% search())))
+)
+ctl$terminate()
+res <- bind_rows(res_callr, res_crew, res_fresh)
 save_results(res, "03-callr-crew.csv")
 cat("rows:", nrow(res), "\n")

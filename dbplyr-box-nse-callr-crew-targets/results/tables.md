@@ -73,6 +73,7 @@
 | alias of stringr fn (nch = str_length) | NA | ✅ x=5,4,5 | ❌ [execute] Failed to collect lazy table. Caused by error in `DBI::… | ❌ [execute] Failed to collect lazy table. Caused by error: ! no suc… |
 | attached box import str_to_upper | NA | ✅ x=ALPHA,BETA ,GAMMA | ✅ x=ALPHA,BETA ,GAMMA | ✅ x=ALPHA,BETA ,GAMMA |
 | ns$fn form: lubridate$year(dt) | NA | ✅ x=2024,2024,2024 | ❌ [build] i In argument: `x = lubridate$year(dt)` Caused by error i… | ❌ [build] i In argument: `x = lubridate$year(dt)` Caused by error i… |
+| ns$fn form + R variable named like the column | NA | ✅ x=2024,2024,2024 | ✅ x=1999,1999,1999 | ✅ x=1999,1999,1999 |
 | pkg::fn form: lubridate::year(dt) | NA | ✅ x=2024,2024,2024 | ✅ x=2024,2024,2024 | ✅ x=-4659,-4659,-4659 |
 | plain year(dt) w/o import | NA | ❌ [build] i In argument: `x = year(dt)`. Caused by error in `year()… | ✅ x=2024,2024,2024 | ✅ x=-4659,-4659,-4659 |
 | box ns$str_to_upper (helpers$ style on pkg) | NA | ❌ [build] i In argument: `x = stringr$str_to_upper(name)`. Caused b… | ❌ [build] i In argument: `x = stringr$str_to_upper(name)` Caused by… | ❌ [build] i In argument: `x = stringr$str_to_upper(name)` Caused by… |
@@ -102,6 +103,7 @@
 | module fn USING a dplyr import as callr func directly | - | ❌ in callr subprocess. Caused by error: ! could not find function "… |
 | ...same with package = TRUE | - | ✅ x=1,2,3 |
 | lazy duckdb tbl passed as arg | - | ❌ in callr subprocess. Caused by error: ! no applicable method for … |
+| lazy tbl passed as arg, dbplyr loaded in child | - | ❌ in callr subprocess. Caused by error: ! Failed to collect lazy ta… |
 | con passed as arg | - | ❌ in callr subprocess. Caused by error: ! Invalid connection i Cont… |
 | child opens own duckdb con | - | ✅ x=1 |
 | child cwd == parent cwd | - | ✅ x=TRUE |
@@ -119,9 +121,13 @@
 | box::use(module) + options(box.path) in command | - | ✅ x=4 |
 | module fn passed via data | - | ✅ x=4 |
 | lazy duckdb tbl passed via data | - | ❌ no applicable method for 'collect' applied to an object of class … |
+| con passed via data | - | ❌ Invalid connection i Context: rapi_prepare |
 | worker opens own duckdb con | - | ✅ x=1 |
 | worker cwd == parent cwd | - | ✅ x=TRUE |
 | worker getOption('box.path') AFTER an earlier task set it (… | - | ✅ x=/home/user/rr-tests/dbplyr-box-nse-callr-crew-targets |
+| runtime .libPaths() change reaches child | - | ✅ x=TRUE |
+| runtime .libPaths() change reaches worker | - | ✅ x=FALSE |
+| reset_packages/options = TRUE: next task sees box.path / di… | - | ✅ x=X    ,7    ,FALSE |
 
 ## Part 6 — dbplyr options and escape hatches
 
@@ -205,7 +211,7 @@
 | strict: global R fn f(var1) | tibble | ✅ x=2,4,6 |
 | strict: global R fn f(var1) | duckdb | ❌ [render] Don't know how to translate `f()` |
 | strict: global R fn f(var1) | sqlite | ❌ [render] Don't know how to translate `f()` |
-| strict: Sys.Date() | tibble | ✅ x=2026-10-16,2026-10-16,2026-10-16 |
+| strict: Sys.Date() | tibble | ✅ x=2026-10-17,2026-10-17,2026-10-17 |
 | strict: Sys.Date() | duckdb | ❌ [render] Don't know how to translate `Sys.Date()` |
 | strict: Sys.Date() | sqlite | ❌ [render] Don't know how to translate `Sys.Date()` |
 | strict: .sql$instr() (real SQL fn) | tibble | ❌ [build] i In argument: `x = .sql$instr(name, "a")`. Caused by err… |

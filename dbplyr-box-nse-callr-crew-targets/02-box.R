@@ -26,6 +26,7 @@ res <- bind_rows(
   probe_bk(P, "alias of stringr fn (nch = str_length)",         mutate(d, x = nch(name))),
   probe_bk(P, "attached box import str_to_upper",       mutate(d, x = str_to_upper(name))),
   probe_bk(P, "ns$fn form: lubridate$year(dt)",         mutate(d, x = lubridate$year(dt))),
+  probe_bk(P, "ns$fn form + R variable named like the column", (\(d) { dt <- as.Date("1999-05-05"); mutate(d, x = lubridate$year(dt)) })(d)),
   probe_bk(P, "pkg::fn form: lubridate::year(dt)",      mutate(d, x = lubridate::year(dt))),
   probe_bk(P, "plain year(dt) w/o import",              mutate(d, x = year(dt))),
   probe_bk(P, "box ns$str_to_upper (helpers$ style on pkg)", mutate(d, x = stringr$str_to_upper(name))),
